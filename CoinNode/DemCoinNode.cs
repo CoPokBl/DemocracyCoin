@@ -14,29 +14,24 @@ namespace CoinNode;
 // 3 - Provide block           | 3 + uint64 + block data
 // 4 - Provide block count     | 4 + uint64
 // 5 - Provide peer            | 5 + ip + port
+// 6 - Heartbeat               | 6
 public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private const int VerifyThreshold = 3;  // If peers is less than this, use peer count
     private const int Difficulty = 3;  // Number of leading zeroes required in hash
     private const double MinerReward = 1.001;
-    private const int MaxPacketSize = 8196;
+    private const int MaxPacketSize = 65_507;  // Max UDP packet
     
-    private int FunctionalVerifyThreshold => VerifyThreshold > _peerStreams.Count ? _peerStreams.Count : VerifyThreshold;
+    private int FunctionalVerifyThreshold => VerifyThreshold > _peers.Count ? _peers.Count : VerifyThreshold;
     
-    private readonly List<IPEndPoint> _peers = [];
-    private List<Thread> _peerThreads = [];
-    private readonly List<(int, NetworkStream)> _peerStreams = [];
+    private readonly List<(int, ReliableUdp)> _peers = [];
     private BlockDatabase _blockDatabase;
     public bool FixingChain;
     private ulong _longestChainLength;
     private int _longestChainPeer;
     private int _pendingBlockIndex;  // Peers we are waiting to send their block counts
-    private readonly Dictionary<Block, List<int>> _pendingBlocks = new();  // Block -> List of peer IDs who agree on the block
-    private Dictionary<int, ConcurrentQueue<byte[]>> _pendingSendPackets = new();
     private Timer _checkPeerBlocksTimer;
 
     public void StartNode() {
-        if (seedNode != null) _peers.Add(seedNode);  // Null seednode means we are the first node
-
         _blockDatabase = new BlockDatabase("blockchain.db");
         Console.WriteLine("Database loaded with " + _blockDatabase.GetBlockCount() + " blocks.");
 
@@ -49,26 +44,25 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
             Console.WriteLine("Loaded existing chain. Length: " + _blockDatabase.GetBlockCount());
         }
 
-        foreach (IPEndPoint peer in _peers) {
-            Thread thread = new(() => ConnectToPeer(peer));
+        if (seedNode != null) {
+            Thread thread = new(() => ConnectToPeer(seedNode));
             thread.Start();
-            _peerThreads.Add(thread);
         }
 
-        while (_peers.Count != _peerStreams.Count) {  // Wait for peers to become available
+        while (_peers.Count != _peers.Count) {  // Wait for peers to become available
             Thread.Sleep(100);
         }
 
         TimerCallback back = state => {
             // Query block counts
-            _pendingBlockIndex = _peerStreams.Count;
-            foreach ((int, NetworkStream) peer in _peerStreams) {
+            _pendingBlockIndex = _peers.Count;
+            foreach ((int, ReliableUdp) peer in _peers) {
                 byte[] request = [0];
                 Console.WriteLine("Querying block count from peer");
-                SendData(peer.Item1, request);
+                peer.Item2.Send(request);
             }
         };
-        _checkPeerBlocksTimer = new Timer(back, null, 5*1000, 60*1000);
+        //_checkPeerBlocksTimer = new Timer(back, null, 5*1000, 60*1000);
 
         if (listenForPeers) {
             Thread listenerThread = new(NewPeerListener);
@@ -77,20 +71,23 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     }
     
     private void NewPeerListener() {
-        TcpListener listener = new(IPAddress.Any, 9534);
-        listener.Start();
+        UdpClient udp = new(9534);
         Console.WriteLine("Listening for new peers...");
         
         while (true) {
-            TcpClient client = listener.AcceptTcpClient();
-            IPEndPoint peer = (IPEndPoint) client.Client.RemoteEndPoint!;
-            Console.WriteLine("New peer: " + peer);
-            _peers.Add(peer);
-            InformPeersOfNewPeer(peer);
-            int peerId = peer.GetHashCode();
-            Thread thread = new(() => OperatePeer(peerId, client.GetStream()));
-            thread.Start();
-            _peerThreads.Add(thread);
+            IPEndPoint endpoint = new(IPAddress.Any, 0);
+            byte[] data = udp.Receive(ref endpoint);
+
+            if (data.Length != 1 || data[0] != 69) {
+                continue;
+            }
+
+            ReliableUdp con = new(udp.Client, endpoint);
+
+            Thread peerThread = new(() => OperatePeer(endpoint.GetHashCode(), con));
+            peerThread.Start();
+            
+            InformPeersOfNewPeer(endpoint);
         }
     }
     
@@ -99,8 +96,8 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         byte[] ipBytes = peer.Address.GetAddressBytes();
         byte[] portBytes = BitConverter.GetBytes(peer.Port);
         peerData = peerData.Concat(ipBytes).Concat(portBytes).ToArray();
-        foreach ((int, NetworkStream) peerStreamPair in _peerStreams) {
-            SendData(peerStreamPair.Item1, peerData);
+        foreach ((int, ReliableUdp) peerStreamPair in _peers) {
+            peerStreamPair.Item2.Send(peerData);
         }
     }
     
@@ -154,8 +151,8 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         byte[] blockData = block.Serialize();
         byte[] indexBytes = BitConverter.GetBytes(newBlockIndex);
         newBlockPacket = newBlockPacket.Concat(indexBytes).Concat(blockData).ToArray();
-        foreach ((int, NetworkStream) peer in _peerStreams) {
-            SendData(peer.Item1, newBlockPacket);
+        foreach ((int, ReliableUdp) peer in _peers) {
+            peer.Item2.Send(newBlockPacket);
             Console.WriteLine("Sent new block to peer.");
         }
     }
@@ -163,23 +160,10 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     public double GetBalance(byte[] walletAddress) {
         return _blockDatabase.GetBalance(walletAddress);
     }
-
-    private void AskForBlock(ulong index, int ignorePeer = -1) {
-        foreach ((int, NetworkStream) peerStreamPair in _peerStreams) {
-            if (peerStreamPair.Item1 == ignorePeer) {
-                continue;
-            }
-            
-            byte[] request = [1];
-            byte[] indexBytes = BitConverter.GetBytes(index);
-            request = request.Concat(indexBytes).ToArray();
-            SendData(peerStreamPair.Item1, request);
-        }
-    }
     
     private void AskForBlockRange(ulong start, ulong end, int ignorePeer = -1, int selectPeer = -1) {
         bool didAny = false;
-        foreach ((int, NetworkStream) peerStreamPair in _peerStreams) {
+        foreach ((int, ReliableUdp) peerStreamPair in _peers) {
             if (selectPeer != -1 && peerStreamPair.Item1 != selectPeer) {
                 continue;
             }
@@ -194,7 +178,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
             byte[] endBytes = BitConverter.GetBytes(end);
             request = request.Concat(startBytes).Concat(endBytes).ToArray();
             Console.WriteLine($"Sending {request.Length} bytes to peer to request block range");
-            SendData(peerStreamPair.Item1, request);
+            peerStreamPair.Item2.Send(request);
         }
 
         if (!didAny) {
@@ -231,41 +215,51 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     /// </summary>
     /// <param name="peer">The peer to listen to.</param>
     private void ConnectToPeer(IPEndPoint peer) {
+        int peerId = peer.GetHashCode();
+        ReliableUdp connection = new(new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp),
+            peer);
+        connection.MaxPacketSize = MaxPacketSize;
+        HeartBeater heart = new(connection);
+        
         try {
-            int peerId = peer.GetHashCode();
-            TcpClient client = new();
-            client.Connect(peer);
-            Console.WriteLine("Connected to peer: " + peer);
-
-            NetworkStream stream = client.GetStream();
-            OperatePeer(peerId, stream);
+            heart.Start();
+            heart.WaitForContact(5000);
+            
+            OperatePeer(peerId, connection, heart);
         }
         catch (Exception e) {
-            Console.WriteLine("Failed to connect to peer: " + e.Message);
+            Console.WriteLine("Peer disconnected: " + e.Message);
         }
         finally {
-            _peers.Remove(peer);
+            try {
+                heart.Stop();
+                connection.Stop();
+            }
+            catch (Exception) {
+                // Ignored
+            }
         }
     }
 
-    private void OperatePeer(int peerId, NetworkStream stream) {
-        _peerStreams.Add((peerId, stream));
+    private void OperatePeer(int peerId, ReliableUdp con, HeartBeater? beater = null) {
+        _peers.Add((peerId, con));
 
-        _pendingSendPackets.Add(peerId, new ConcurrentQueue<byte[]>());
-        Thread senderThread = new(() => PeerSender(peerId, stream));
-        senderThread.Start();
+        if (beater == null) {
+            beater = new HeartBeater(con);
+            beater.Start();
+        }
         
         // Ask for block count
         byte[] request = [0];
         Console.WriteLine("Querying block count from peer");
-        SendData(peerId, request);
+        con.Send(request);
         
         byte[] buffer = new byte[MaxPacketSize];
 
         try {
             while (true) {
                 Console.Write("Waiting for read... ");
-                int bytesRead = stream.Read(buffer, 0, MaxPacketSize);
+                int bytesRead = con.Receive(buffer);
                 Console.WriteLine("READ");
                 if (bytesRead == 0) {
                     continue;
@@ -281,7 +275,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                         byte[] response = new byte[] { 4 }
                             .Concat(BitConverter.GetBytes(_blockDatabase.GetBlockCount()))
                             .ToArray();
-                        SendData(peerId, response);
+                        con.Send(response);
                         break;
                     }
 
@@ -289,7 +283,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                         ulong index = BitConverter.ToUInt64(buffer.AsSpan()[1..]);
                         Block block = _blockDatabase.GetBlockByIndex(index);
                         byte[] response = block.Serialize();
-                        SendData(peerId, response);
+                        con.Send(response);
                         break;
                     }
 
@@ -306,7 +300,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                             byte[] indexBytes = BitConverter.GetBytes(currentBlockIndex);
                             byte[] blockData = block.Serialize();
                             response = response.Concat(indexBytes).Concat(blockData).ToArray();
-                            SendData(peerId, response);
+                            con.Send(response);
                             currentBlockIndex++;
                         }
 
@@ -319,7 +313,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                             continue; // We only accept the next block
                         }
 
-                        byte[] blockData = buffer[9..(bytesRead)]; // 1 byte for block index, 8 bytes for block data
+                        byte[] blockData = buffer[9..bytesRead]; // 1 byte for block index, 8 bytes for block data
                         Block block = Block.Deserialize(blockData);
 
                         Console.WriteLine("Received block: " + block.HashString());
@@ -331,14 +325,12 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                         
                         // Block is valid
                         AddBlockToDatabase(block);
-                        _pendingBlocks.Remove(block);
                         Console.WriteLine("Block added.");
 
                         if (_blockDatabase.GetBlockCount() == _longestChainLength) {
                             FixingChain = false;
                             Console.WriteLine("Chain has been fixed :)");
                         }
-
                         break;
                     }
 
@@ -363,15 +355,14 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                     }
                     
                     /* Provide Peer        */  case 5: {
+                        break;
                         byte[] ipBytes = buffer[1..5];
                         byte[] portBytes = buffer[5..9];
                         IPAddress ip = new(ipBytes);
                         int port = BitConverter.ToInt32(portBytes);
                         IPEndPoint newPeer = new(ip, port);
-                        _peers.Add(newPeer);
                         Thread thread = new(() => ConnectToPeer(newPeer));
                         thread.Start();
-                        _peerThreads.Add(thread);
                         break;
                     }
                     
@@ -386,31 +377,9 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
             Console.WriteLine(e);
         }
         finally {
-            _peerStreams.Remove((peerId, stream));
-            _peers.Remove(_peers.Find(p => p.GetHashCode() == peerId)!);
+            _peers.Remove(_peers.Find(p => p.GetHashCode() == peerId));
         }
         
-    }
-
-    private void PeerSender(int peerId, NetworkStream stream) {
-        while (true) {
-            if (_pendingSendPackets[peerId].TryDequeue(out byte[]? data)) {
-                Console.WriteLine($"Sending {data.Length} bytes to {peerId}, type: {data[0]}");
-                stream.Write(data);
-                stream.Flush();
-            }
-            
-            Thread.Sleep(1000);
-        }
-    }
-
-    private void SendData(int peerId, byte[] data) {
-        if (data.Length > MaxPacketSize) {
-            throw new ArgumentException("Packet exceeds max size.");
-        }
-        
-        Console.WriteLine("QUEUED PACKET");
-        _pendingSendPackets[peerId].Enqueue(data);
     }
 
     private void AddBlockToDatabase(Block block) {
