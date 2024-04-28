@@ -5,21 +5,9 @@ namespace CoinNode;
 public class BlockDatabase {
     
     private const string ConnectionString = "Data Source=";
-    
     private readonly SQLiteConnection _connection;
 
-    private string? _version;
-    public string Version {
-        get {
-            if (_version == null) {
-                FetchVersion();
-            }
-            return _version!;
-        }
-    }
-    
-    private ulong? _blockCountCache;
-    private Block? _lastBlockCache;
+    private Block? _cachedLastBlock;
 
     public BlockDatabase(string path) {
         _connection = new SQLiteConnection(ConnectionString + path + ";");
@@ -45,44 +33,42 @@ CREATE TABLE IF NOT EXISTS transactions (
 ", _connection);
         cmd.ExecuteNonQuery();
     }
-
-    private void FetchVersion() {
-        using SQLiteCommand cmd = new("SELECT SQLITE_VERSION();", _connection);
-        _version = cmd.ExecuteScalar()!.ToString()!;
-    }
     
     public ulong GetBlockCount() {
-        if (_blockCountCache != null) {
-            return _blockCountCache.Value;
-        }
-        
         using SQLiteCommand cmd = new("SELECT COUNT(*) FROM blocks;", _connection);
-        _blockCountCache = Convert.ToUInt64(cmd.ExecuteScalar()!);
-        return _blockCountCache.Value;
+        return Convert.ToUInt64(cmd.ExecuteScalar()!);
     }
     
-    public Block GetLastBlock() {
-        if (_lastBlockCache != null) {
-            return _lastBlockCache;
+    public Block GetLastBlock(int skip = 0) {
+        if (skip == 0 && _cachedLastBlock != null) {
+            return _cachedLastBlock;
         }
         
-        using SQLiteCommand cmd = new("SELECT * FROM blocks ORDER BY ROWID DESC LIMIT 1;", _connection);
+        using SQLiteCommand cmd = new("SELECT * FROM blocks ORDER BY ROWID DESC LIMIT 1 OFFSET @skip;", _connection);
+        cmd.Parameters.AddWithValue("@skip", skip);
         using SQLiteDataReader reader = cmd.ExecuteReader();
         reader.Read();
         
         byte[] prevHash = Convert.FromBase64String(reader.GetString(0));
         byte[] data = Convert.FromBase64String(reader.GetString(1));
         Transaction[] transactions = Transaction.DeserializeMany(Convert.FromBase64String(reader.GetString(2)));
-        
-        _lastBlockCache = new Block(prevHash, data, transactions);
-        return _lastBlockCache;
+
+        Block block = new(prevHash, data, transactions);
+        if (skip == 0) {
+            _cachedLastBlock = block;
+        }
+        return block;
     }
     
-    public Block GetBlockByIndex(ulong index) {
+    public Block? GetBlockByIndex(ulong index) {
         using SQLiteCommand cmd = new("SELECT * FROM blocks ORDER BY ROWID LIMIT 1 OFFSET @index;", _connection);
         cmd.Parameters.AddWithValue("@index", index);
         using SQLiteDataReader reader = cmd.ExecuteReader();
         reader.Read();
+
+        if (!reader.HasRows) {
+            return null;
+        }
         
         byte[] prevHash = Convert.FromBase64String(reader.GetString(0));
         byte[] data = Convert.FromBase64String(reader.GetString(1));
@@ -100,9 +86,9 @@ CREATE TABLE IF NOT EXISTS transactions (
         List<Block> blocks = [];
         while (reader.Read()) {
             byte[] prevHash = Convert.FromBase64String(reader.GetString(0));
-            byte[] data = Convert.FromBase64String(reader.GetString(1));
+            byte[] nonce = Convert.FromBase64String(reader.GetString(1));
             Transaction[] transactions = Transaction.DeserializeMany(Convert.FromBase64String(reader.GetString(2)));
-            blocks.Add(new Block(prevHash, data, transactions));
+            blocks.Add(new Block(prevHash, nonce, transactions));
         }
         
         return blocks.ToArray();
@@ -114,8 +100,8 @@ CREATE TABLE IF NOT EXISTS transactions (
         cmd.Parameters.AddWithValue("@data", Convert.ToBase64String(block.Nonce));
         cmd.Parameters.AddWithValue("@trans", Convert.ToBase64String(Transaction.SerializeMany(block.Transactions)));
         cmd.ExecuteNonQuery();
-        _lastBlockCache = block;
-        _blockCountCache++;
+        
+        _cachedLastBlock = null;
     }
     
     public void InsertTransaction(Transaction transaction) {
@@ -141,7 +127,8 @@ CREATE TABLE IF NOT EXISTS transactions (
             byte[] recipient = Convert.FromBase64String(reader.GetString(1));
             if (sender.SequenceEqual(publicKey)) {
                 balance -= amount;
-            } else if (recipient.SequenceEqual(publicKey)) {
+            }
+            if (recipient.SequenceEqual(publicKey)) {
                 balance += amount;
             }
         }

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 
 namespace CoinNode;
 
@@ -23,6 +22,9 @@ public class HeartBeater(ReliableUdp udp) {
     }
 
     public void Stop() {
+        if (_cts.IsCancellationRequested) {
+            return;  // We are already stopped, no point complaining
+        }
         _cts.Cancel();
         _beatThread.Join();
     }
@@ -36,13 +38,13 @@ public class HeartBeater(ReliableUdp udp) {
             Thread.Sleep(100);
         }
         
-        Console.WriteLine("HEARTBEATER RECOGNISED CONTACT");
+        Logger.Debug("HEART", "HEARTBEATER RECOGNISED CONTACT");
         sw.Stop();
     }
     
     private async void Beat() {
         while (!_cts.IsCancellationRequested) {
-            udp.UnsafeSend([69]);
+            udp.UnsafeSend([6]);
             try {
                 await Task.Delay(HeartbeatPeriod, _cts.Token);
             }
@@ -53,7 +55,6 @@ public class HeartBeater(ReliableUdp udp) {
     }
     
     private void RecordPeerHeartbeat() {
-        Console.WriteLine("[HEARTBEAT] Received Peer Heartbeat");
         if (_peerHeartbeatTimer.ElapsedMilliseconds > HeartbeatWarningThreshold) {
             OnDegraded?.Invoke();
         }

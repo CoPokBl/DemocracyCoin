@@ -62,13 +62,13 @@ public class Transaction {
         };
     }
     
-    public bool IsValid() {
+    public bool IsSignatureValid() {
         if (Sender.Length == 0) {
             return true;
         }
         
         using RSA rsa = RSA.Create();
-        rsa.ImportSubjectPublicKeyInfo(Sender, out _);
+        rsa.ImportRSAPublicKey(Sender, out _);
         return rsa.VerifyData(Serialize(true), Signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
     }
     
@@ -108,5 +108,9 @@ public class Transaction {
         }
         
         return transactions;
+    }
+
+    public override int GetHashCode() {
+        return BitConverter.ToInt32(MD5.HashData(Serialize()));
     }
 }

@@ -16,7 +16,7 @@ public class ReliableUdp : IDisposable {
     private readonly ConcurrentQueue<byte[]> _incoming = new();
     private readonly ConcurrentQueue<PendingSendMessage> _outgoing = new();
     private readonly List<string> _sent = [];
-    private readonly IPEndPoint _peer;
+    public readonly IPEndPoint Peer;
     private readonly List<Thread> _threads = new();
     private readonly CancellationTokenSource _cts = new();
     
@@ -36,7 +36,7 @@ public class ReliableUdp : IDisposable {
 
     public ReliableUdp(Socket socket, IPEndPoint peer) {
         _socket = socket;
-        _peer = peer;
+        Peer = peer;
         _socket.ReceiveTimeout = -1;
         
         Thread sendThread = new(ReceivePackets);
@@ -62,13 +62,20 @@ public class ReliableUdp : IDisposable {
             }
         }
         
-        _socket.Dispose();
+        //_socket.Dispose();
     }
 
     private void ReceivePackets() {
         while (!_cts.IsCancellationRequested) {
             byte[] outputBuffer = new byte[MaxPacketSize == -1 ? 64_000 : MaxPacketSize];
-            int length = _socket.Receive(outputBuffer);
+            int length;
+            try {
+                length = _socket.Receive(outputBuffer);
+            }
+            catch (Exception e) {
+                Logger.Debug("NODE", e.ToString());
+                continue;
+            }
             MadeContact();
             
             Array.Resize(ref outputBuffer, length);
@@ -80,14 +87,19 @@ public class ReliableUdp : IDisposable {
                 continue;  // Drop it
             }
 
-            // Message packet
-            if (_waitingForAck != null && outputBuffer.SequenceEqual(_waitingForAck)) {
-                _waitingForAck = null;
+            if (packetType == 7) {  // ack
+                if (_waitingForAck != null && outputBuffer.SequenceEqual(_waitingForAck)) {
+                    _waitingForAck = null;
+                    continue;
+                }
+                
+                Logger.Debug("NET", "Received ack for packet we aren't waiting for");
                 continue;
             }
-            
+
+            // Packet to pass onto a receiver
             byte[] checksum = MD5.HashData(outputBuffer);
-            _socket.SendTo(checksum, _peer);
+            _socket.SendTo(new byte[] {7}.Concat(checksum).ToArray(), Peer);
             uint checksumInt = BitConverter.ToUInt32(checksum);
             if (_acknowledged == checksumInt) {  // Not new data
                 continue;
@@ -116,7 +128,7 @@ public class ReliableUdp : IDisposable {
                     
                     Debug("[SEND] Sent, waiting for ack");
                     
-                    _waitingForAck = checksum;
+                    _waitingForAck = new byte[] {7}.Concat(checksum).ToArray();
                     Stopwatch sw = Stopwatch.StartNew();
                     while (_waitingForAck != null && sw.ElapsedMilliseconds < 1000) {
                         Thread.Yield();
@@ -152,7 +164,7 @@ public class ReliableUdp : IDisposable {
         
         PendingSendMessage msg = new() {
             Message = data,
-            Peer = _peer,
+            Peer = Peer,
             Id = Guid.NewGuid().ToString(),
             Safe = true
         };
@@ -179,11 +191,12 @@ public class ReliableUdp : IDisposable {
         
         PendingSendMessage msg = new() {
             Message = data,
-            Peer = _peer,
+            Peer = Peer,
             Id = Guid.NewGuid().ToString(),
             Safe = false
         };
-        _outgoing.Enqueue(msg);
+        //_outgoing.Enqueue(msg);
+        _socket.SendTo(data, Peer);
         return true;
     }
     
