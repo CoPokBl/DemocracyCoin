@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -17,11 +16,12 @@ namespace CoinNode;
 // 6 - Heartbeat               | 6
 // 7 - Acknowledgement         | 7 + checksum[16]
 // 8 - Provide transaction     | 8 + transaction
+// 9 - Provide block range     | 9 + x*(block size + block data)
 public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private const int VerifyThreshold = 3;  // If peers is less than this, use peer count
     private const int Difficulty = 23;  // Number of leading zeroes required in hash  was 26
-    private const double MinerReward = 1.001;
-    private const int MaxPacketSize = 65_507;  // Max UDP packet
+    private const double MinerReward = 1.001;  // Coins rewarded for mining one block
+    private const int MaxPacketSize = 30_000;  // Max UDP packet
     
     private int FunctionalVerifyThreshold => VerifyThreshold > _peers.Count ? _peers.Count : VerifyThreshold;
     public static int AverageHashesToBlock() => (int)Math.Pow(2, Difficulty);
@@ -33,9 +33,10 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private int _longestChainPeer;
     private int _pendingBlockIndex;  // Peers we are waiting to send their block counts
     private Timer _checkPeerBlocksTimer;
-    private readonly ConcurrentQueue<Transaction> _pendingTransactions = new();
+    private readonly List<Transaction> _pendingTransactions = [];  // These are currently volatile.
 
     private readonly object _peersLock = new();
+    private readonly object _pendingTransactionsLock = new();
 
     public void StartNode() {
         _blockDatabase = new BlockDatabase("blockchain.db");
@@ -176,10 +177,13 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                 TransactionNumber = 0
             }
         ];
-        while (!_pendingTransactions.IsEmpty) {
-            if (_pendingTransactions.TryDequeue(out Transaction? t)) {
+
+        lock (_pendingTransactionsLock) {
+            foreach (Transaction t in _pendingTransactions) {
                 transactions.Add(t);
             }
+            
+            _pendingTransactions.Clear();
         }
         
         Block block = new() {
@@ -233,7 +237,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
 
     public void PublishTransaction(Transaction transaction) {
         Debug.Assert(ValidateTransaction(transaction));
-        _pendingTransactions.Enqueue(transaction);
+        _pendingTransactions.Add(transaction);
         
         // Send to peers
         byte[] packet = new byte[] { 8 }.Concat(transaction.Serialize()).ToArray();
@@ -247,6 +251,12 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     }
 
     public ulong GetNextTransactionNumber(byte[] walletAddress) {
+        lock (_pendingTransactionsLock) {  // Check to see if they have any pending transactions
+            Transaction? lastPending = _pendingTransactions.LastOrDefault(t => t.Sender.SequenceEqual(walletAddress));
+            if (lastPending != null) {
+                return lastPending.TransactionNumber + 1;
+            }
+        }
         return _blockDatabase.GetLastTransactionNumber(walletAddress) + 1;
     }
     
@@ -350,12 +360,11 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         byte[] request = [0];
         Logger.Debug("NODE", "Querying block count from peer");
         con.Send(request);
-        
-        byte[] buffer = new byte[MaxPacketSize];
 
         try {
             while (true) {
                 Logger.Debug("NODE", "Waiting for read... ");
+                byte[] buffer = new byte[MaxPacketSize];  // Needs to be here because its size is modified so it needs to be reallocated
                 int bytesRead;
                 try {
                     bytesRead = con.Receive(buffer);
@@ -372,6 +381,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
 
                 // Packet types
                 byte packetType = buffer[0];
+                buffer = buffer[..bytesRead];
                 
                 Logger.Debug("NODE", $"Received message from peer: {bytesRead} bytes. Type: {packetType}");
                 
@@ -398,49 +408,53 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
 
                     /* Get block range     */  case 2: {
                         ulong start = BitConverter.ToUInt64(buffer.AsSpan()[1..9]);
-                        ulong end = BitConverter.ToUInt64(buffer.AsSpan()[10..]);
+                        ulong end = BitConverter.ToUInt64(buffer.AsSpan()[9..]);
                         Block[] blocks = _blockDatabase.GetBlockRange(start, end);
+                        ulong[] indexsOfBlocks = Enumerable.Range((int)start, (int)(end - start)).Select(i => (ulong)i).ToArray();
 
-                        ulong currentBlockIndex = start;
-                        foreach (Block block in blocks) {
-                            // Send each block using packet type 3
-                            Logger.Debug("NODE", "Sending block: " + block.HashString());
-                            byte[] response = [3];
-                            byte[] indexBytes = BitConverter.GetBytes(currentBlockIndex);
-                            Debug.Assert(indexBytes.Length == 8);
-                            byte[] blockData = block.Serialize();
-                            response = response.Concat(indexBytes).Concat(blockData).ToArray();
-                            con.Send(response);
-                            currentBlockIndex++;
+                        int cIndex = 0;
+                        byte[][] blockData = blocks.Select(b =>
+                            BitConverter.GetBytes(indexsOfBlocks[cIndex++]).Concat(b.Serialize()).ToArray()).ToArray();
+                        
+                        // Collate blocks into packets of max size PacketMaxSize
+                        byte[] currentPacket = [9];
+                        int inPacket = 0;
+                        for (int i = 0; i < blockData.Length; i++) {
+                            byte[] bd = blockData[i];
+                            byte[] bdSize = BitConverter.GetBytes(bd.Length);
+                            currentPacket = currentPacket.Concat(bdSize).Concat(bd).ToArray();
+                            inPacket++;
+                        
+                            if (i == blockData.Length-1 || currentPacket.Length + blockData[i+1].Length > MaxPacketSize) {
+                                Debug.Assert(currentPacket.Length <= MaxPacketSize);
+                                con.Send(currentPacket);  // 9 + x*(size(index + bd) + index + bd)
+                                Console.WriteLine($"Sent peer {inPacket} blocks, {currentPacket.Length} bytes");
+                                inPacket = 0;
+                                currentPacket = [9];
+                            }
                         }
+                        
+                        // ReSharper disable once RedundantCast  It's not redundant you liar.
+                        Debug.Assert(currentPacket.SequenceEqual([(byte)9]));
+
+                        // ulong currentBlockIndex = start;
+                        // foreach (Block block in blocks) {
+                        //     // Send each block using packet type 3
+                        //     Logger.Debug("NODE", "Sending block: " + block.HashString());
+                        //     byte[] response = [3];
+                        //     byte[] indexBytes = BitConverter.GetBytes(currentBlockIndex);
+                        //     Debug.Assert(indexBytes.Length == 8);
+                        //     byte[] blockData = block.Serialize();
+                        //     response = response.Concat(indexBytes).Concat(blockData).ToArray();
+                        //     con.Send(response);
+                        //     currentBlockIndex++;
+                        // }
 
                         break;
                     }
 
                     /* Provide block       */  case 3: {
-                        ulong index = BitConverter.ToUInt64(buffer.AsSpan()[1..9]);
-                        if (index != _blockDatabase.GetBlockCount() && !FixingChain) {
-                            continue; // We only accept the next block
-                        }
-
-                        byte[] blockData = buffer[9..bytesRead]; // 1 byte for block index, 8 bytes for block data
-                        Block block = Block.Deserialize(blockData);
-
-                        Logger.Debug("NODE", "Received block: " + block.HashString());
-
-                        // Verify block
-                        if (!ValidateBlock(block)) {
-                            continue;
-                        }
-                        
-                        // Block is valid
-                        AddBlockToDatabase(block);
-                        Logger.Info("NODE", "Block added.");
-
-                        if (_blockDatabase.GetBlockCount() == _longestChainLength) {
-                            FixingChain = false;
-                            Logger.Info("NODE", "Chain has been fixed :)");
-                        }
+                        ProcessIncomingBlockData(buffer[1..]);
                         break;
                     }
 
@@ -487,9 +501,23 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                             Logger.Debug("NODE", "Transaction rejected, invalid");
                             break;
                         }
-                        
-                        _pendingTransactions.Enqueue(transaction);
+
+                        lock (_pendingTransactionsLock) {
+                            _pendingTransactions.Add(transaction);
+                        }
                         Logger.Info("NODE", "--------------- Transaction Received ---------------");
+                        break;
+                    }
+                    
+                    /* Provide block range */ case 9: {
+                        int nextIndex = 1;
+                        while (nextIndex < buffer.Length) {
+                            byte[] blockDataSizeBytes = buffer[nextIndex..(nextIndex + 4)];
+                            Debug.Assert(blockDataSizeBytes.Length == 4);
+                            int blockDataSize = BitConverter.ToInt32(blockDataSizeBytes);
+                            ProcessIncomingBlockData(buffer[(nextIndex + 4)..(nextIndex + 4 + blockDataSize)]);
+                            nextIndex += 4 + blockDataSize;
+                        }
                         break;
                     }
                     
@@ -511,6 +539,38 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         
     }
 
+    private void ProcessIncomingBlockData(byte[] buffer) {
+        ulong index = BitConverter.ToUInt64(buffer.AsSpan()[..8]);
+        if (index != _blockDatabase.GetBlockCount() && !FixingChain) {
+            return; // We only accept the next block
+        }
+
+        byte[] blockData = buffer[8..]; // 1 byte for block index, 8 bytes for block data
+        Block block = Block.Deserialize(blockData);
+
+        Logger.Debug("NODE", "Received block: " + block.HashString());
+
+        // Verify block
+        if (!ValidateBlock(block)) {
+            return;
+        }
+                        
+        // Block is valid
+        AddBlockToDatabase(block);
+        Logger.Info("NODE", "Block added. " + (FixingChain ? $"({_blockDatabase.GetBlockCount()}/{_longestChainLength})" : ""));
+
+        if (_blockDatabase.GetBlockCount() == _longestChainLength) {
+            FixingChain = false;
+            Logger.Info("NODE", "Chain has been fixed :)");
+        }
+                        
+        // Remove all pending transactions that were in the block
+        int[] trans = block.Transactions.Select(t => t.GetHashCode()).ToArray();
+        lock (_pendingTransactions) {
+            _pendingTransactions.RemoveAll(t => trans.Contains(t.GetHashCode()));
+        }
+    }
+
     private void AddBlockToDatabase(Block block) {
         _blockDatabase.InsertBlock(block);
         
@@ -520,6 +580,18 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         }
     }
 
+    /// <summary>
+    /// Checks the validity of a Block.
+    /// </summary>
+    /// <param name="block">The block to validate.</param>
+    /// <param name="skip">
+    /// How far back in the database the block is, the age of the block.
+    /// Set to 0 if the block is not in the database and this block comes after the last block in the database.
+    /// Set to 1 if the being validated is the last block in the database.
+    /// It is how many blocks we need to skip before we get to the block that should come before this block.
+    /// Defaults to 0.
+    /// </param>
+    /// <returns>True if the block is valid, otherwise false.</returns>
     private bool ValidateBlock(Block block, int skip = 0) {
         byte[] expectedHash = _blockDatabase.GetLastBlock(skip).Hash();
         if (!block.PrevHash.SequenceEqual(expectedHash)) {
@@ -572,6 +644,16 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         return true;
     }
 
+    /// <summary>
+    /// Check the validity of a Transaction object that has not been added to the database.
+    /// This works will pending transactions.
+    /// This method logs the fail reason apon rejection.
+    /// </summary>
+    /// <remarks>
+    /// THIS WILL NOT WORK ON TRANSACTIONS ALREADY IN THE DATABASE. It will fail because the transaction number will be invalid.
+    /// </remarks>
+    /// <param name="transaction">The transaction to validate, MUST NOT BE IN DATABASE.</param>
+    /// <returns>True if the transaction is valid, otherwise false.</returns>
     private bool ValidateTransaction(Transaction transaction) {
         if (transaction.Amount <= 0) {  // Coinbases need a specific amount so this isn't needed
             Logger.Debug("NODE", $"Block verification failed. (Negative transaction, amount: {transaction.Amount})");
@@ -592,9 +674,9 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         }
             
         // Check if the transaction number is valid
-        ulong lastTn = _blockDatabase.GetLastTransactionNumber(transaction.Sender);
-        if (transaction.TransactionNumber != lastTn + 1) {
-            Logger.Debug("NODE", $"Block verification failed. (Transaction number invalid, expected: {lastTn+1}, actual: {transaction.TransactionNumber}.");
+        ulong nextTn = GetNextTransactionNumber(transaction.Sender);
+        if (transaction.TransactionNumber != nextTn) {
+            Logger.Debug("NODE", $"Block verification failed. (Transaction number invalid, expected: {nextTn}, actual: {transaction.TransactionNumber}.");
             return false;
         }
 

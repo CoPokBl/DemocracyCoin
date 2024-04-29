@@ -6,7 +6,7 @@ namespace CoinNode;
 
 internal static class Program {
     public static void Main(string[] args) {
-        DemCoinNode node = new(args.Contains("noseed") ? new IPEndPoint(Dns.GetHostAddresses("zane.serble.net")[0], 9534) : null, !args.Contains("nohost"));
+        DemCoinNode node = new(args.Contains("noseed") ? new IPEndPoint(Dns.GetHostAddresses("me.zaneharrison.com")[0], 9534) : null, !args.Contains("nohost"));
         node.StartNode();
         
         Console.WriteLine("Started node.");

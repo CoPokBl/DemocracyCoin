@@ -210,6 +210,7 @@ public class ReliableUdp : IDisposable {
         Stopwatch sw = Stopwatch.StartNew();
         while (timeout == -1 || sw.ElapsedMilliseconds < timeout) {
             if (!_incoming.TryDequeue(out byte[] data)) continue;
+            System.Diagnostics.Debug.Assert(data.Length <= MaxPacketSize || MaxPacketSize == -1, $"Packet exceeds max size, max: {MaxPacketSize}");
             Array.Copy(data, outputBuffer, data.Length);
             return data.Length;
         }
