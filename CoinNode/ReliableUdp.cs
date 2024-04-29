@@ -17,7 +17,7 @@ public class ReliableUdp : IDisposable {
     private readonly BlockingCollection<PendingSendMessage> _outgoing = new();
     private readonly List<string> _sent = [];
     public readonly IPEndPoint Peer;
-    private readonly List<Task> _threads = new();
+    private readonly List<Thread> _threads = [];
     private readonly CancellationTokenSource _cts = new();
     
     private readonly object _sentLock = new();
@@ -38,9 +38,14 @@ public class ReliableUdp : IDisposable {
         _socket = socket;
         Peer = peer;
         _socket.ReceiveTimeout = -1;
-        
-        _threads.Add(ReceivePackets());
-        _threads.Add(SendPackets());
+
+        Thread r = new(ReceivePackets);
+        r.Start();
+        _threads.Add(r);
+
+        Thread s = new(SendPackets);
+        s.Start();
+        _threads.Add(s);
     }
 
     public void Stop(bool inclSocket = true) => Dispose(inclSocket);
@@ -49,9 +54,9 @@ public class ReliableUdp : IDisposable {
 
     public void Dispose(bool inclSocket) {
         _cts.Cancel();
-        foreach (Task t in _threads) {
+        foreach (Thread t in _threads) {
             try {
-                t.Wait(2000);
+                t.Join(2000);
             }
             catch (TaskCanceledException) {
                 // Ignored
@@ -61,7 +66,7 @@ public class ReliableUdp : IDisposable {
         if (inclSocket) _socket.Dispose();
     }
 
-    private async Task ReceivePackets() {
+    private async void ReceivePackets() {
         while (!_cts.IsCancellationRequested) {
             byte[] outputBuffer = new byte[MaxPacketSize == -1 ? 64_000 : MaxPacketSize];
             int length;
@@ -106,7 +111,7 @@ public class ReliableUdp : IDisposable {
         }
     }
     
-    private async Task SendPackets() {
+    private async void SendPackets() {
         while (true) {
             if (_outgoing.TryTake(out PendingSendMessage? info)) {
                 byte[] data = info.Message;

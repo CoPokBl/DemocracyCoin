@@ -33,6 +33,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private int _longestChainPeer;
     private int _pendingBlockIndex;  // Peers we are waiting to send their block counts
     private readonly List<Transaction> _pendingTransactions = [];  // These are currently volatile.
+    public ManualResetEventSlim ConnectedToNetSwitch = new(false);
 
     private readonly object _peersLock = new();
     private readonly object _pendingTransactionsLock = new();
@@ -332,9 +333,11 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         
         try {
             heart.Start();
+            Logger.Debug("PEERLISTENER", "Waiting for contact via heartbeat from peer...");
             heart.WaitForContact(10000);
             
             Utils.Announce("Connected to peer!", "NODE");
+            ConnectedToNetSwitch.Set();
             
             OperatePeer(peerId, connection, heart);
         }

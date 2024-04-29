@@ -1,9 +1,9 @@
 namespace CoinNode;
 
 public static class Logger {
-    public static bool Debugs = true;
-    public static bool Infos = true;
-    public static bool Errors = true;
+    public static bool EnableDebug = true;
+    public static bool EnableInfo = true;
+    public static bool EnableError = true;
     public const bool WhitelistIsBlacklist = true;
 
     private static readonly string[] SystemWhitelist = [
@@ -11,9 +11,9 @@ public static class Logger {
 
     public static bool AllLogs {
         set {
-            Debugs = value;
-            Infos = value;
-            Errors = value;
+            EnableDebug = value;
+            EnableInfo = value;
+            EnableError = value;
         }
     }
 
@@ -22,19 +22,19 @@ public static class Logger {
     }
 
     public static void Debug(string system, string msg) {
-        if (Debugs && IsSystemAllowed(system)) {
+        if (EnableDebug && IsSystemAllowed(system)) {
             Console.WriteLine($"[{system}] {msg}");
         }
     }
 
     public static void Info(string system, string msg) {
-        if (Infos && IsSystemAllowed(system)) {
+        if (EnableInfo && IsSystemAllowed(system)) {
             Console.WriteLine($"[{system}] {msg}");
         }
     }
     
     public static void Error(string system, string msg) {
-        if (Errors && IsSystemAllowed(system)) {
+        if (EnableError && IsSystemAllowed(system)) {
             Console.WriteLine($"[{system}] {msg}");
         }
     }

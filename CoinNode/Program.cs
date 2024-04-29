@@ -11,6 +11,11 @@ internal static class Program {
         
         Console.WriteLine("Started node.");
 
+        if (!args.Contains("nowait")) {
+            Console.WriteLine("Waiting for connection (Use arg 'nowait' to skip)...");
+            node.ConnectedToNetSwitch.Wait();
+        }
+
         if (args.Contains("nowallet")) {
             Thread.Sleep(-1);
             return;
