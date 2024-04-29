@@ -362,6 +362,14 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         byte[] request = [0];
         Logger.Debug("NODE", "Querying block count from peer");
         con.Send(request);
+        
+        // Send transactions
+        lock (_pendingTransactionsLock) {
+            foreach (Transaction transaction in _pendingTransactions) {
+                byte[] packet = new byte[] { 8 }.Concat(transaction.Serialize()).ToArray();
+                con.Send(packet);
+            }
+        }
 
         try {
             while (true) {
