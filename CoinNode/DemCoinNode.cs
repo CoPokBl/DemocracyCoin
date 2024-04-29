@@ -69,7 +69,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                 }
             }
         };
-        Timer checkBlocksTimer = new Timer(back, null, 5*1000, 60*1000);
+        Timer checkBlocksTimer = new(back, null, 5*1000, 60*1000);
 
         if (listenForPeers) {
             Task peerListener = NewPeerListener();
@@ -95,7 +95,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                 continue;
             }
 
-            if (data.Length != 1 || data[0] != 6) {
+            if (data is not [6]) {
                 continue;
             }
 
@@ -317,12 +317,13 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         FixingChain = true;
         AskForBlockRange(_blockDatabase.GetBlockCount(), _longestChainLength, selectPeer: _longestChainPeer);
     }
-    
+
     /// <summary>
     /// Handles incoming packets from a peer, and sends responses. THIS DOES NOT HANDLE SENDING PACKETS TO PEERS. Except
     /// </summary>
     /// <param name="peer">The peer to listen to.</param>
-    private void ConnectToPeer(IPEndPoint peer) {
+    /// <param name="preserveSocket"></param>
+    private void ConnectToPeer(IPEndPoint peer, bool preserveSocket = false) {
         int peerId = peer.GetHashCode();
         ReliableUdp connection = new(new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp),
             peer);
@@ -343,7 +344,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         finally {
             try {
                 heart.Stop();
-                connection.Stop();
+                connection.Stop(!preserveSocket);
             }
             catch (Exception) {
                 // Ignored

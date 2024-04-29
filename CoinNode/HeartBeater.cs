@@ -10,7 +10,7 @@ public class HeartBeater(ReliableUdp udp) {
     public bool Degraded => _peerHeartbeatTimer.ElapsedMilliseconds > HeartbeatWarningThreshold;
 
     private readonly Stopwatch _peerHeartbeatTimer = new();
-    private Thread _beatThread;
+    private Thread? _beatThread;
     private CancellationTokenSource _cts = new();
 
     public void Start() {
@@ -26,7 +26,7 @@ public class HeartBeater(ReliableUdp udp) {
             return;  // We are already stopped, no point complaining
         }
         _cts.Cancel();
-        _beatThread.Join();
+        _beatThread?.Join();
     }
     
     public void WaitForContact(int timeout = -1) {
@@ -38,7 +38,7 @@ public class HeartBeater(ReliableUdp udp) {
     
     private async void Beat() {
         while (!_cts.IsCancellationRequested) {
-            udp.UnsafeSend([6]);
+            await udp.UnsafeSend([6]);
             try {
                 await Task.Delay(HeartbeatPeriod, _cts.Token);
             }

@@ -17,7 +17,7 @@ public class ReliableUdp : IDisposable {
     private readonly BlockingCollection<PendingSendMessage> _outgoing = new();
     private readonly List<string> _sent = [];
     public readonly IPEndPoint Peer;
-    private readonly List<Thread> _threads = new();
+    private readonly List<Task> _threads = new();
     private readonly CancellationTokenSource _cts = new();
     
     private readonly object _sentLock = new();
@@ -38,30 +38,27 @@ public class ReliableUdp : IDisposable {
         _socket = socket;
         Peer = peer;
         _socket.ReceiveTimeout = -1;
-
-        Task receiveThread = ReceivePackets();
         
-        Thread sendThread = new(SendPackets);
-        receiveThread.Start();
-        
-        _threads.Add(sendThread);
-        //_threads.Add(receiveThread);
+        _threads.Add(ReceivePackets());
+        _threads.Add(SendPackets());
     }
 
-    public void Stop() => Dispose();
-    
-    public void Dispose() {
+    public void Stop(bool inclSocket = true) => Dispose(inclSocket);
+
+    public void Dispose() => Dispose(true);
+
+    public void Dispose(bool inclSocket) {
         _cts.Cancel();
-        foreach (Thread t in _threads) {
+        foreach (Task t in _threads) {
             try {
-                t.Join(2000);
+                t.Wait(2000);
             }
             catch (TaskCanceledException) {
                 // Ignored
             }
         }
         
-        //_socket.Dispose();
+        if (inclSocket) _socket.Dispose();
     }
 
     private async Task ReceivePackets() {
@@ -109,7 +106,7 @@ public class ReliableUdp : IDisposable {
         }
     }
     
-    private void SendPackets() {
+    private async Task SendPackets() {
         while (true) {
             if (_outgoing.TryTake(out PendingSendMessage? info)) {
                 byte[] data = info.Message;
@@ -119,7 +116,7 @@ public class ReliableUdp : IDisposable {
                 Debug($"[SEND] Sending packet with checksum (Safe: {info.Safe}, From: {_socket.LocalEndPoint}): " + BitConverter.ToUInt32(checksum) + " to " + endPoint.Address + ":" + endPoint.Port + "...");
                 
                 while (true) {  // Go until ack
-                    _socket.SendTo(data, endPoint);
+                    await _socket.SendToAsync(data, endPoint);
 
                     if (!info.Safe) {  // Don't wait for ack
                         break;
@@ -145,14 +142,15 @@ public class ReliableUdp : IDisposable {
                 }
             }
         }
+        // ReSharper disable once FunctionNeverReturns
     }
-    
+
     /// <summary>
     /// Send function that sends data to an endpoint, this function should be reliable.
     /// The data will be delivered to the endpoint.
     /// </summary>
     /// <param name="data"></param>
-    /// <param name="endPoint"></param>
+    /// <param name="timeout"></param>
     /// <returns>True if the packet was sent successfully, otherwise false.</returns>
     public bool Send(byte[] data, int timeout = -1) {
         if (MaxPacketSize != -1 && data.Length > MaxPacketSize) {
@@ -181,20 +179,12 @@ public class ReliableUdp : IDisposable {
         return false;
     }
     
-    public bool UnsafeSend(byte[] data) {
+    public async Task UnsafeSend(byte[] data) {
         if (MaxPacketSize != -1 && data.Length > MaxPacketSize) {
             throw new ArgumentException("Packet exceeds maximum");
         }
-        
-        PendingSendMessage msg = new() {
-            Message = data,
-            Peer = Peer,
-            Id = Guid.NewGuid().ToString(),
-            Safe = false
-        };
-        //_outgoing.Enqueue(msg);
-        _socket.SendTo(data, Peer);
-        return true;
+
+        await _socket.SendToAsync(data, Peer);
     }
     
     /// <summary>
