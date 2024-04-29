@@ -13,24 +13,24 @@ public class ReliableUdp : IDisposable {
     private readonly Socket _socket;
     private uint _acknowledged = 1;
     private byte[]? _waitingForAck;
-    private readonly ConcurrentQueue<byte[]> _incoming = new();
-    private readonly ConcurrentQueue<PendingSendMessage> _outgoing = new();
+    private readonly BlockingCollection<byte[]> _incoming = new();
+    private readonly BlockingCollection<PendingSendMessage> _outgoing = new();
     private readonly List<string> _sent = [];
     public readonly IPEndPoint Peer;
     private readonly List<Thread> _threads = new();
     private readonly CancellationTokenSource _cts = new();
     
-    private object _sentLock = new();
-    public bool DoesContactExist;
+    private readonly object _sentLock = new();
+    public readonly ManualResetEventSlim ContactSwitch = new(false);
     
     private static void Debug(string msg) {
-        Console.WriteLine(msg);
+        Logger.Debug("SEND", msg);
     }
 
     private void MadeContact() {
-        if (!DoesContactExist) {
+        if (!ContactSwitch.IsSet) {
             Debug("Made contact with peer");
-            DoesContactExist = true;
+            ContactSwitch.Set();
         }
     }
 
@@ -38,15 +38,14 @@ public class ReliableUdp : IDisposable {
         _socket = socket;
         Peer = peer;
         _socket.ReceiveTimeout = -1;
+
+        Task receiveThread = ReceivePackets();
         
-        Thread sendThread = new(ReceivePackets);
-        sendThread.Start();
-        
-        Thread receiveThread = new(SendPackets);
+        Thread sendThread = new(SendPackets);
         receiveThread.Start();
         
         _threads.Add(sendThread);
-        _threads.Add(receiveThread);
+        //_threads.Add(receiveThread);
     }
 
     public void Stop() => Dispose();
@@ -65,12 +64,12 @@ public class ReliableUdp : IDisposable {
         //_socket.Dispose();
     }
 
-    private void ReceivePackets() {
+    private async Task ReceivePackets() {
         while (!_cts.IsCancellationRequested) {
             byte[] outputBuffer = new byte[MaxPacketSize == -1 ? 64_000 : MaxPacketSize];
             int length;
             try {
-                length = _socket.Receive(outputBuffer);
+                length = await _socket.ReceiveAsync(outputBuffer);
             }
             catch (Exception e) {
                 Logger.Debug("NODE", e.ToString());
@@ -106,13 +105,13 @@ public class ReliableUdp : IDisposable {
             }
             _acknowledged = checksumInt;
             
-            _incoming.Enqueue(outputBuffer);
+            _incoming.Add(outputBuffer);
         }
     }
     
     private void SendPackets() {
         while (true) {
-            if (_outgoing.TryDequeue(out PendingSendMessage? info)) {
+            if (_outgoing.TryTake(out PendingSendMessage? info)) {
                 byte[] data = info.Message;
                 IPEndPoint endPoint = info.Peer;
                 byte[] checksum = MD5.HashData(data);
@@ -145,8 +144,6 @@ public class ReliableUdp : IDisposable {
                     Debug("[SEND] Timeout, resending packet");
                 }
             }
-
-            Thread.Yield();
         }
     }
     
@@ -168,7 +165,7 @@ public class ReliableUdp : IDisposable {
             Id = Guid.NewGuid().ToString(),
             Safe = true
         };
-        _outgoing.Enqueue(msg);
+        _outgoing.Add(msg);
         
         Stopwatch sw = Stopwatch.StartNew();
         while (timeout == -1 || sw.ElapsedMilliseconds < timeout) {
@@ -207,15 +204,13 @@ public class ReliableUdp : IDisposable {
     /// <param name="timeout"></param>
     /// <returns>-1 is there was a timeout, otherwise the length of the received packet.</returns>
     public int Receive(byte[] outputBuffer, int timeout = -1) {
-        Stopwatch sw = Stopwatch.StartNew();
-        while (timeout == -1 || sw.ElapsedMilliseconds < timeout) {
-            if (!_incoming.TryDequeue(out byte[] data)) continue;
-            System.Diagnostics.Debug.Assert(data.Length <= MaxPacketSize || MaxPacketSize == -1, $"Packet exceeds max size, max: {MaxPacketSize}");
-            Array.Copy(data, outputBuffer, data.Length);
-            return data.Length;
+        if (!_incoming.TryTake(out byte[]? data, timeout)) {
+            return -1;
         }
 
-        return -1;
+        System.Diagnostics.Debug.Assert(data.Length <= MaxPacketSize || MaxPacketSize == -1, $"Packet exceeds max size, max: {MaxPacketSize}");
+        Array.Copy(data, outputBuffer, data.Length);
+        return data.Length;
     }
     
 }

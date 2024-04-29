@@ -32,7 +32,6 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private ulong _longestChainLength;
     private int _longestChainPeer;
     private int _pendingBlockIndex;  // Peers we are waiting to send their block counts
-    private Timer _checkPeerBlocksTimer;
     private readonly List<Transaction> _pendingTransactions = [];  // These are currently volatile.
 
     private readonly object _peersLock = new();
@@ -70,22 +69,27 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                 }
             }
         };
-        _checkPeerBlocksTimer = new Timer(back, null, 5*1000, 60*1000);
+        Timer checkBlocksTimer = new Timer(back, null, 5*1000, 60*1000);
 
         if (listenForPeers) {
-            Thread listenerThread = new(NewPeerListener);
-            listenerThread.Start();
+            Task peerListener = NewPeerListener();
         }
     }
     
-    private void NewPeerListener() {
+    private async Task NewPeerListener() {
         UdpClient udp = new(9534);
-        Logger.Info("NODE", "Listening for new peers...");
+        Logger.Info("PEERLISTENER", "Listening for new peers...");
         
         while (true) {
-            Logger.Debug("NODE", "WAITING FOR PEER PACKET...");
-            IPEndPoint endpoint = new(IPAddress.Any, 0);
-            byte[] data = udp.Receive(ref endpoint);
+            Logger.Debug("PEERLISTENER", "WAITING FOR PEER PACKET...");
+            Console.Title = "Ready to handle peer packet...";
+            
+            UdpReceiveResult res = await udp.ReceiveAsync();
+            IPEndPoint endpoint = res.RemoteEndPoint;
+            byte[] data = res.Buffer;
+            
+            Console.Title = "Handling peer packet...";
+            Logger.Debug("PEERLISTENER", "NO LONGER WAITING FOR PEER PACKET");
 
             if (_peers.Any(p => p.Item1 == endpoint.GetHashCode())) {  // Just a regular heartbeat
                 continue;
@@ -237,7 +241,9 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
 
     public void PublishTransaction(Transaction transaction) {
         Debug.Assert(ValidateTransaction(transaction));
-        _pendingTransactions.Add(transaction);
+        lock (_pendingTransactionsLock) {
+            _pendingTransactions.Add(transaction);
+        }
         
         // Send to peers
         byte[] packet = new byte[] { 8 }.Concat(transaction.Serialize()).ToArray();

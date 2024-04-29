@@ -30,16 +30,10 @@ public class HeartBeater(ReliableUdp udp) {
     }
     
     public void WaitForContact(int timeout = -1) {
-        Stopwatch sw = Stopwatch.StartNew();
-        while (!udp.DoesContactExist) {
-            if (sw.ElapsedMilliseconds > timeout && timeout != -1) {
-                throw new TaskCanceledException("Timeout while waiting for contact");
-            }
-            Thread.Sleep(100);
+        if (!udp.ContactSwitch.Wait(timeout)) {
+            throw new TaskCanceledException("Timeout while waiting for contact");
         }
-        
         Logger.Debug("HEART", "HEARTBEATER RECOGNISED CONTACT");
-        sw.Stop();
     }
     
     private async void Beat() {
