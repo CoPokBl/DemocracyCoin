@@ -21,7 +21,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private const int VerifyThreshold = 3;  // If peers is less than this, use peer count
     private const int Difficulty = 23;  // Number of leading zeroes required in hash  was 26
     private const double MinerReward = 1.001;  // Coins rewarded for mining one block
-    private const int MaxPacketSize = 30_000;  // Max UDP packet
+    private const int MaxPacketSize = 10_000;  // Max UDP packet
     
     private int FunctionalVerifyThreshold => VerifyThreshold > _peers.Count ? _peers.Count : VerifyThreshold;
     public static int AverageHashesToBlock() => (int)Math.Pow(2, Difficulty);
