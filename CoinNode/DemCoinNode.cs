@@ -73,11 +73,14 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         Timer checkBlocksTimer = new(back, null, 5*1000, 60*1000);
 
         if (listenForPeers) {
-            Task peerListener = NewPeerListener();
+            Thread peerListener = new(NewPeerListener) {
+                Priority = ThreadPriority.Highest  // Listening for peers is important
+            };
+            peerListener.Start();
         }
     }
     
-    private async Task NewPeerListener() {
+    private async void NewPeerListener() {
         UdpClient udp = new(9534);
         Logger.Info("PEERLISTENER", "Listening for new peers...");
         
@@ -323,8 +326,9 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     /// Handles incoming packets from a peer, and sends responses. THIS DOES NOT HANDLE SENDING PACKETS TO PEERS. Except
     /// </summary>
     /// <param name="peer">The peer to listen to.</param>
+    /// <param name="timeout"></param>
     /// <param name="preserveSocket"></param>
-    private void ConnectToPeer(IPEndPoint peer, bool preserveSocket = false) {
+    private void ConnectToPeer(IPEndPoint peer, int timeout = -1, bool preserveSocket = false) {
         int peerId = peer.GetHashCode();
         ReliableUdp connection = new(new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp),
             peer);
@@ -334,7 +338,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         try {
             heart.Start();
             Logger.Debug("PEERLISTENER", "Waiting for contact via heartbeat from peer...");
-            heart.WaitForContact(10000);
+            heart.WaitForContact(timeout);  // No timeout
             
             Utils.Announce("Connected to peer!", "NODE");
             ConnectedToNetSwitch.Set();
@@ -508,7 +512,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                             Logger.Debug("NODE", "Someone tried to make us connect to ourselves");
                             break;
                         }
-                        Thread thread = new(() => ConnectToPeer(newPeer));
+                        Thread thread = new(() => ConnectToPeer(newPeer, 10_000));  // 10 sec timeout
                         thread.Start();
                         break;
                     }

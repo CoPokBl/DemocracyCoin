@@ -118,7 +118,7 @@ public class ReliableUdp : IDisposable {
                 IPEndPoint endPoint = info.Peer;
                 byte[] checksum = MD5.HashData(data);
                 
-                Debug($"[SEND] Sending packet with checksum (Safe: {info.Safe}, From: {_socket.LocalEndPoint}): " + BitConverter.ToUInt32(checksum) + " to " + endPoint.Address + ":" + endPoint.Port + "...");
+                Debug($"Sending packet with checksum (Safe: {info.Safe}, From: {_socket.LocalEndPoint}): " + BitConverter.ToUInt32(checksum) + " to " + endPoint.Address + ":" + endPoint.Port + "...");
                 
                 while (true) {  // Go until ack
                     await _socket.SendToAsync(data, endPoint);
@@ -127,7 +127,7 @@ public class ReliableUdp : IDisposable {
                         break;
                     }
                     
-                    Debug("[SEND] Sent, waiting for ack");
+                    Debug("Sent, waiting for ack");
                     
                     _waitingForAck = new byte[] {7}.Concat(checksum).ToArray();
                     Stopwatch sw = Stopwatch.StartNew();
@@ -136,14 +136,14 @@ public class ReliableUdp : IDisposable {
                     }
 
                     if (_waitingForAck == null) {
-                        Debug("[SEND] Ack received");
+                        Debug("Ack received");
                         lock (_sentLock) {
                             _sent.Add(info.Id);
                         }
                         break;
                     }
 
-                    Debug("[SEND] Timeout, resending packet");
+                    Debug("Timeout, resending packet");
                 }
             }
         }

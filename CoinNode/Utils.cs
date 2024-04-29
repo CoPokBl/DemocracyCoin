@@ -15,7 +15,7 @@ public static class Utils {
     public static void Announce(string msg, string? system = null) {
         int spaces = 43 - msg.Length;
         int firstSpaces = spaces / 2;
-        string middleBar = $"|{RepeatChars(' ', firstSpaces)}{msg}{RepeatChars(' ', spaces - firstSpaces)}";
+        string middleBar = $"|{RepeatChars(' ', firstSpaces)}{msg}{RepeatChars(' ', spaces - firstSpaces)}|";
         if (system == null) {  // 43
             Console.WriteLine("---------------------------------------------");
             Console.WriteLine(middleBar);

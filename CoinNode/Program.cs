@@ -37,6 +37,7 @@ internal static class Program {
 
         if (args.Contains("mine")) {
             Console.WriteLine("[MINER] Mining...");
+            Thread.CurrentThread.Priority = ThreadPriority.Highest;
             ulong tried = 0;
             int mined = 0;
             Random random = new();
