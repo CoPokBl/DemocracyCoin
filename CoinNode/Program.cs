@@ -47,9 +47,7 @@ internal static class Program {
                 random.NextBytes(nonce);
                 if (node.IsNonceValid(nonce)) {
                     node.MineBlock(nonce, publicKey);
-                    Console.WriteLine("---------------------------------------------");
-                    Console.WriteLine("|              Mined block!                 |");
-                    Console.WriteLine("---------------------------------------------");
+                    Utils.Announce("Mined Block!");
                     mined++;
                 }
                 tried++;

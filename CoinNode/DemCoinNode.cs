@@ -327,6 +327,8 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
             heart.Start();
             heart.WaitForContact(10000);
             
+            Utils.Announce("Connected to peer!", "NODE");
+            
             OperatePeer(peerId, connection, heart);
         }
         catch (Exception e) {
