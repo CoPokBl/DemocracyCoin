@@ -2,10 +2,12 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using CoinNode.Transport;
+using WebSocketSharp;
+using WebSocketSharp.Server;
 
 namespace CoinNode;
 
-// Basically a TCP server
 // Packets:
 // 0 - Get block count         | 0
 // 1 - Get block by index      | 1 + uint64
@@ -13,29 +15,31 @@ namespace CoinNode;
 // 3 - Provide block           | 3 + uint64 + block data
 // 4 - Provide block count     | 4 + uint64
 // 5 - Provide peer            | 5 + ip + port
-// 6 - Heartbeat               | 6
+// 6 - Heartbeat               | 6                                         DEPRECATED
 // 7 - Acknowledgement         | 7 + checksum[16]
 // 8 - Provide transaction     | 8 + transaction
 // 9 - Provide block range     | 9 + x*(block size + block data)
-public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
+public partial class DemCoinNode(IPEndPoint? seedNode) {
     private const int VerifyThreshold = 3;  // If peers is less than this, use peer count
     private const int Difficulty = 23;  // Number of leading zeroes required in hash  was 26
     private const double MinerReward = 1.001;  // Coins rewarded for mining one block
     private const int MaxPacketSize = 10_000;  // Max UDP packet
+    private const int DefaultPort = 9534;
+    private const int MaxPort = 65536;
+    private const int HeartbeatPeriod = 5000;
     
     private int FunctionalVerifyThreshold => VerifyThreshold > _peers.Count ? _peers.Count : VerifyThreshold;
     public static int AverageHashesToBlock() => (int)Math.Pow(2, Difficulty);
     
-    private readonly List<(int, ReliableUdp)> _peers = [];
+    private readonly List<(int, WebSocket)> _peers = [];
+    private readonly object _peersLock = new();
+    
     private BlockDatabase _blockDatabase = null!;
     public bool FixingChain;
-    private ulong _longestChainLength;
-    private int _longestChainPeer;
-    private int _pendingBlockIndex;  // Peers we are waiting to send their block counts
+    private ulong _remoteHighestChainTip;  // Peers we are waiting to send their block counts
     private readonly List<Transaction> _pendingTransactions = [];  // These are currently volatile.
-    public ManualResetEventSlim ConnectedToNetSwitch = new(false);
+    public readonly ManualResetEventSlim ConnectedToNetSwitch = new(false);
 
-    private readonly object _peersLock = new();
     private readonly object _pendingTransactionsLock = new();
 
     public void StartNode() {
@@ -52,91 +56,52 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         }
 
         if (seedNode != null) {
-            Thread thread = new(() => ConnectToPeer(seedNode));
-            thread.Start();
+            ConnectToPeer(seedNode);
         }
 
-        TimerCallback back = _ => {
-            // Query block counts
-            lock (_peersLock) {
-                _pendingBlockIndex = _peers.Count;
-            }
-
-            lock (_peersLock) {
-                foreach ((int, ReliableUdp) peer in _peers) {
-                    byte[] request = [0];
-                    Logger.Debug("NODE", "Querying block count from peer");
-                    peer.Item2.Send(request);
-                }
-            }
-        };
-        Timer checkBlocksTimer = new(back, null, 5*1000, 60*1000);
-
-        if (listenForPeers) {
-            Thread peerListener = new(NewPeerListener) {
-                Priority = ThreadPriority.Highest  // Listening for peers is important
-            };
-            peerListener.Start();
-        }
-    }
-    
-    private async void NewPeerListener() {
-        UdpClient udp = new(9534);
-        Logger.Info("PEERLISTENER", "Listening for new peers...");
         
+        int port = DefaultPort;
         while (true) {
-            Logger.Debug("PEERLISTENER", "WAITING FOR PEER PACKET...");
-            Console.Title = "Ready to handle peer packet...";
-            
-            UdpReceiveResult res = await udp.ReceiveAsync();
-            IPEndPoint endpoint = res.RemoteEndPoint;
-            byte[] data = res.Buffer;
-            
-            Console.Title = "Handling peer packet...";
-            Logger.Debug("PEERLISTENER", "NO LONGER WAITING FOR PEER PACKET");
-
-            if (_peers.Any(p => p.Item1 == endpoint.GetHashCode())) {  // Just a regular heartbeat
-                continue;
+            try {
+                WebSocketServer server = new(IPAddress.Any, port);
+                server.AddWebSocketService("/node", () => new WssServe(this));
+                server.Start();
+                Logger.Info("NET", $"Bound to port {port}");
+                break;
             }
-
-            if (data is not [6]) {
-                continue;
-            }
-
-            Logger.Debug("NODE", "Got peer connection request, trying to connect");
-            ReliableUdp con = new(udp.Client, endpoint);
-
-            Thread peerThread = new(() => OperatePeer(endpoint.GetHashCode(), con));
-            peerThread.Start();
-            
-            InformPeersOfNewPeer(endpoint);
-            InformNewUserOfPeers(con);
-        }
-        // ReSharper disable once FunctionNeverReturns
-    }
-    
-    private void InformPeersOfNewPeer(IPEndPoint peer) {
-        byte[] peerData = ConstructNewPeerPacket(peer);
-        lock (_peersLock) {
-            foreach ((int, ReliableUdp) peerStreamPair in _peers) {
-                if (peerStreamPair.Item1 == peer.GetHashCode()) {  // They already know they exist
-                    continue;
-                }
-                peerStreamPair.Item2.Send(peerData);
+            catch (SocketException) {
+                Logger.Info("NET", $"Could not bind to port {port}, trying {port+1}");
+                port++;
             }
         }
+
+        Timer blockCountRequestTimer = new(_ => {
+            lock (_peersLock) {
+                byte[] req = [0];  // Request block count
+                foreach ((int, WebSocket) peer in _peers) {
+                    peer.Item2.Send(req);
+                }
+            }
+        }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
     }
 
-    private void InformNewUserOfPeers(ReliableUdp newUser) {
-        lock (_peersLock) {
-            foreach ((int, ReliableUdp) peerStreamPair in _peers) {
-                if (peerStreamPair.Item1 == newUser.Peer.GetHashCode()) {  // They already know they exist
-                    continue;
-                }
+    public class WssServe(DemCoinNode node) : WebSocketBehavior {
+        
+        protected override void OnMessage(MessageEventArgs e) {
+            node.HandlePeerPacket(new MethodDataSender(Send), e);
+        }
 
-                byte[] packet = ConstructNewPeerPacket(peerStreamPair.Item2.Peer);
-                newUser.Send(packet);
-            }
+        protected override void OnOpen() {
+            IPEndPoint endPoint = Context.UserEndPoint;
+            endPoint.Port = DefaultPort;  // Just assume it's this
+            byte[] packet = ConstructNewPeerPacket(endPoint);
+            // lock (node._peersLock) {
+            //     foreach ((int, WebSocket) peer in node._peers) {
+            //         peer.Item2.Send(packet);
+            //     }
+            //     node._peers.Add((Context.UserEndPoint.GetHashCode(), Context.WebSocket));
+            // }
+            node.HandleNewPeer(Context.UserEndPoint.GetHashCode(), Context.WebSocket);
         }
     }
 
@@ -211,7 +176,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         byte[] indexBytes = BitConverter.GetBytes(newBlockIndex);
         newBlockPacket = newBlockPacket.Concat(indexBytes).Concat(blockData).ToArray();
         lock (_peersLock) {
-            foreach ((int, ReliableUdp) peer in _peers) {
+            foreach ((int, WebSocket) peer in _peers) {
                 peer.Item2.Send(newBlockPacket);
                 Logger.Debug("NODE", "Sent new block to peer.");
             }
@@ -251,7 +216,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         
         // Send to peers
         byte[] packet = new byte[] { 8 }.Concat(transaction.Serialize()).ToArray();
-        foreach ((int, ReliableUdp) peerInfo in _peers) {
+        foreach ((int, WebSocket) peerInfo in _peers) {
             peerInfo.Item2.Send(packet);
         }
     }
@@ -270,31 +235,13 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         return _blockDatabase.GetLastTransactionNumber(walletAddress) + 1;
     }
     
-    private void AskForBlockRange(ulong start, ulong end, int ignorePeer = -1, int selectPeer = -1) {
-        bool didAny = false;
-        lock (_peersLock) {
-            foreach ((int, ReliableUdp) peerStreamPair in _peers) {
-                if (selectPeer != -1 && peerStreamPair.Item1 != selectPeer) {
-                    continue;
-                }
-            
-                if (peerStreamPair.Item1 == ignorePeer) {
-                    continue;
-                }
-
-                didAny = true;
-                byte[] request = [2];
-                byte[] startBytes = BitConverter.GetBytes(start);
-                byte[] endBytes = BitConverter.GetBytes(end);
-                request = request.Concat(startBytes).Concat(endBytes).ToArray();
-                Logger.Debug("DB", $"Sending {request.Length} bytes to peer to request block range");
-                peerStreamPair.Item2.Send(request);
-            }
-        }
-
-        if (!didAny) {
-            throw new Exception("Select Peer not found to ask for blocks.");
-        }
+    private void AskForBlockRange(ulong start, ulong end, IDataSender peer) {
+        byte[] request = [2];
+        byte[] startBytes = BitConverter.GetBytes(start);
+        byte[] endBytes = BitConverter.GetBytes(end);
+        request = request.Concat(startBytes).Concat(endBytes).ToArray();
+        Logger.Debug("DB", $"Sending {request.Length} bytes to peer to request block range");
+        peer.Send(request);
     }
 
     private static bool IsHashValidBlock(IReadOnlyList<byte> hash) {
@@ -307,257 +254,207 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
         return true;
     }
 
-    private void GetNewBlocksFromBestPeerIfDone() {
-        if (!FixingChain) {
-            return;
+    private void HandleNewPeer(int peerId, WebSocket socket) {
+        ConnectedToNetSwitch.Set();
+        byte[] request = [0];
+        Logger.Debug("NODE", "Querying block count from peer");
+        socket.Send(request);
+            
+        // Send transactions
+        lock (_pendingTransactionsLock) {
+            foreach (byte[] packet in _pendingTransactions.Select(transaction => new byte[] { 8 }.Concat(transaction.Serialize()).ToArray())) {
+                socket.Send(packet);
+            }
         }
-        
-        _pendingBlockIndex--;
-        if (_pendingBlockIndex > 0) {
-            Logger.Info("NODE", $"Got block count from new peer {_pendingBlockIndex} left");
-            return;
+
+        // Inform peers or new peer
+        lock (_peersLock) {
+                
         }
-        Logger.Info("NODE", $"Fixing chain, {_longestChainLength - _blockDatabase.GetBlockCount()} blocks to go. Getting from {_longestChainPeer}");
-        FixingChain = true;
-        AskForBlockRange(_blockDatabase.GetBlockCount(), _longestChainLength, selectPeer: _longestChainPeer);
     }
 
     /// <summary>
     /// Handles incoming packets from a peer, and sends responses. THIS DOES NOT HANDLE SENDING PACKETS TO PEERS. Except
     /// </summary>
     /// <param name="peer">The peer to listen to.</param>
-    /// <param name="timeout"></param>
-    /// <param name="preserveSocket"></param>
-    private void ConnectToPeer(IPEndPoint peer, int timeout = -1, bool preserveSocket = false) {
+    private void ConnectToPeer(IPEndPoint peer) {
         int peerId = peer.GetHashCode();
-        ReliableUdp connection = new(new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp),
-            peer);
-        connection.MaxPacketSize = MaxPacketSize;
-        HeartBeater heart = new(connection);
-        
-        try {
-            heart.Start();
-            Logger.Debug("PEERLISTENER", "Waiting for contact via heartbeat from peer...");
-            heart.WaitForContact(timeout);  // No timeout
-            
-            Utils.Announce("Connected to peer!", "NODE");
-            ConnectedToNetSwitch.Set();
-            
-            OperatePeer(peerId, connection, heart);
-        }
-        catch (Exception e) {
-            Logger.Info("NODE", "Peer disconnected: " + e.Message);
-        }
-        finally {
-            try {
-                heart.Stop();
-                connection.Stop(!preserveSocket);
-            }
-            catch (Exception) {
-                // Ignored
+        lock (_peersLock) {
+            if (_peers.Any(p => p.Item1 == peerId)) {
+                return;
             }
         }
+        Logger.Info("NODE", "Connecting to peer: " + peer);
+        WebSocket socket = new("ws://" + peer + "/node");
+        socket.OnMessage += (_, args) => HandlePeerPacket(new WebSocketDataSender(socket), args);
+        socket.OnOpen += (_, _) => {
+            HandleNewPeer(peerId, socket);
+        };
+        socket.OnClose += (_, _) => {
+            lock (_peersLock) {
+                _peers.RemoveAll(p => p.Item1 == peerId);
+            }
+        };
+        socket.Connect();
+        _peers.Add((peerId, socket));
     }
 
-    private void OperatePeer(int peerId, ReliableUdp con, HeartBeater? beater = null) {
-        lock (_peersLock) {
-            // Are we already here?
-            _peers.RemoveAll(p => p.Item1 == peerId);
-
-            _peers.Add((peerId, con));
+    private void HandlePeerPacket(IDataSender socket, MessageEventArgs args) {
+        if (args.IsPing) {
+            Logger.Debug("NODE", "Peer pinged us :)");
+            return;
         }
-
-        if (beater == null) {
-            beater = new HeartBeater(con);
-            beater.Start();
+        if (!args.IsBinary) {
+            Logger.Debug("NODE", "Non binary packet, dropping");
+            return;
         }
-        
-        // Ask for block count
-        byte[] request = [0];
-        Logger.Debug("NODE", "Querying block count from peer");
-        con.Send(request);
-        
-        // Send transactions
-        lock (_pendingTransactionsLock) {
-            foreach (Transaction transaction in _pendingTransactions) {
-                byte[] packet = new byte[] { 8 }.Concat(transaction.Serialize()).ToArray();
-                con.Send(packet);
-            }
-        }
-
         try {
-            while (true) {
-                Logger.Debug("NODE", "Waiting for read... ");
-                byte[] buffer = new byte[MaxPacketSize];  // Needs to be here because its size is modified so it needs to be reallocated
-                int bytesRead;
-                try {
-                    bytesRead = con.Receive(buffer);
+            byte[] buffer = args.RawData;
+            int bytesRead = buffer.Length;
+            if (bytesRead == 0) {
+                return;
+            }
+
+            // Packet types
+            byte packetType = buffer[0];
+            buffer = buffer[..bytesRead];
+            
+            Logger.Debug("NODE", $"Received message from peer: {bytesRead} bytes. Type: {packetType}");
+            
+            switch (packetType) {
+                /* Get block count     */  case 0: {
+                    byte[] response = new byte[] { 4 }
+                        .Concat(BitConverter.GetBytes(_blockDatabase.GetBlockCount()))
+                        .ToArray();
+                    socket.Send(response);
+                    break;
                 }
-                catch (Exception e) {
-                    Logger.Error("NODE", e.ToString());
-                    continue;
+
+                /* Get block by index  */  case 1: {
+                    ulong index = BitConverter.ToUInt64(buffer.AsSpan()[1..]);
+                    Block? block = _blockDatabase.GetBlockByIndex(index);
+                    if (block == null) {  // We don't have it
+                        Logger.Debug("NODE", $"Could not find requested block at index: {index}");
+                        break;
+                    }
+                    byte[] response = block.Serialize();
+                    socket.Send(response);
+                    break;
                 }
-                
-                Logger.Info("NODE", "READ");
-                if (bytesRead == 0) {
-                    continue;
+
+                /* Get block range     */  case 2: {
+                    ulong start = BitConverter.ToUInt64(buffer.AsSpan()[1..9]);
+                    ulong end = BitConverter.ToUInt64(buffer.AsSpan()[9..]);
+                    Block[] blocks = _blockDatabase.GetBlockRange(start, end);
+                    ulong[] indexsOfBlocks = Enumerable.Range((int)start, (int)(end - start)).Select(i => (ulong)i).ToArray();
+
+                    int cIndex = 0;
+                    byte[][] blockData = blocks.Select(b =>
+                        BitConverter.GetBytes(indexsOfBlocks[cIndex++]).Concat(b.Serialize()).ToArray()).ToArray();
+                    
+                    // Collate blocks into packets of max size PacketMaxSize
+                    byte[] currentPacket = [9];
+                    int inPacket = 0;
+                    for (int i = 0; i < blockData.Length; i++) {
+                        byte[] bd = blockData[i];
+                        byte[] bdSize = BitConverter.GetBytes(bd.Length);
+                        currentPacket = currentPacket.Concat(bdSize).Concat(bd).ToArray();
+                        inPacket++;
+                    
+                        if (i == blockData.Length-1 || currentPacket.Length + blockData[i+1].Length > MaxPacketSize) {
+                            Debug.Assert(currentPacket.Length <= MaxPacketSize);
+                            socket.Send(currentPacket);  // 9 + x*(size(index + bd) + index + bd)
+                            Console.WriteLine($"Sent peer {inPacket} blocks, {currentPacket.Length} bytes");
+                            inPacket = 0;
+                            currentPacket = [9];
+                        }
+                    }
+                    
+                    // ReSharper disable once RedundantCast  It's not redundant you liar.
+                    Debug.Assert(currentPacket.SequenceEqual([(byte)9]));
+
+                    // ulong currentBlockIndex = start;
+                    // foreach (Block block in blocks) {
+                    //     // Send each block using packet type 3
+                    //     Logger.Debug("NODE", "Sending block: " + block.HashString());
+                    //     byte[] response = [3];
+                    //     byte[] indexBytes = BitConverter.GetBytes(currentBlockIndex);
+                    //     Debug.Assert(indexBytes.Length == 8);
+                    //     byte[] blockData = block.Serialize();
+                    //     response = response.Concat(indexBytes).Concat(blockData).ToArray();
+                    //     con.Send(response);
+                    //     currentBlockIndex++;
+                    // }
+
+                    break;
                 }
 
-                // Packet types
-                byte packetType = buffer[0];
-                buffer = buffer[..bytesRead];
-                
-                Logger.Debug("NODE", $"Received message from peer: {bytesRead} bytes. Type: {packetType}");
-                
-                switch (packetType) {
-                    /* Get block count     */  case 0: {
-                        byte[] response = new byte[] { 4 }
-                            .Concat(BitConverter.GetBytes(_blockDatabase.GetBlockCount()))
-                            .ToArray();
-                        con.Send(response);
-                        break;
-                    }
+                /* Provide block       */  case 3: {
+                    ProcessIncomingBlockData(buffer[1..]);
+                    break;
+                }
 
-                    /* Get block by index  */  case 1: {
-                        ulong index = BitConverter.ToUInt64(buffer.AsSpan()[1..]);
-                        Block? block = _blockDatabase.GetBlockByIndex(index);
-                        if (block == null) {  // We don't have it
-                            Logger.Debug("NODE", $"Could not find requested block at index: {index}");
-                            break;
-                        }
-                        byte[] response = block.Serialize();
-                        con.Send(response);
-                        break;
-                    }
-
-                    /* Get block range     */  case 2: {
-                        ulong start = BitConverter.ToUInt64(buffer.AsSpan()[1..9]);
-                        ulong end = BitConverter.ToUInt64(buffer.AsSpan()[9..]);
-                        Block[] blocks = _blockDatabase.GetBlockRange(start, end);
-                        ulong[] indexsOfBlocks = Enumerable.Range((int)start, (int)(end - start)).Select(i => (ulong)i).ToArray();
-
-                        int cIndex = 0;
-                        byte[][] blockData = blocks.Select(b =>
-                            BitConverter.GetBytes(indexsOfBlocks[cIndex++]).Concat(b.Serialize()).ToArray()).ToArray();
-                        
-                        // Collate blocks into packets of max size PacketMaxSize
-                        byte[] currentPacket = [9];
-                        int inPacket = 0;
-                        for (int i = 0; i < blockData.Length; i++) {
-                            byte[] bd = blockData[i];
-                            byte[] bdSize = BitConverter.GetBytes(bd.Length);
-                            currentPacket = currentPacket.Concat(bdSize).Concat(bd).ToArray();
-                            inPacket++;
-                        
-                            if (i == blockData.Length-1 || currentPacket.Length + blockData[i+1].Length > MaxPacketSize) {
-                                Debug.Assert(currentPacket.Length <= MaxPacketSize);
-                                con.Send(currentPacket);  // 9 + x*(size(index + bd) + index + bd)
-                                Console.WriteLine($"Sent peer {inPacket} blocks, {currentPacket.Length} bytes");
-                                inPacket = 0;
-                                currentPacket = [9];
-                            }
-                        }
-                        
-                        // ReSharper disable once RedundantCast  It's not redundant you liar.
-                        Debug.Assert(currentPacket.SequenceEqual([(byte)9]));
-
-                        // ulong currentBlockIndex = start;
-                        // foreach (Block block in blocks) {
-                        //     // Send each block using packet type 3
-                        //     Logger.Debug("NODE", "Sending block: " + block.HashString());
-                        //     byte[] response = [3];
-                        //     byte[] indexBytes = BitConverter.GetBytes(currentBlockIndex);
-                        //     Debug.Assert(indexBytes.Length == 8);
-                        //     byte[] blockData = block.Serialize();
-                        //     response = response.Concat(indexBytes).Concat(blockData).ToArray();
-                        //     con.Send(response);
-                        //     currentBlockIndex++;
-                        // }
-
-                        break;
-                    }
-
-                    /* Provide block       */  case 3: {
-                        ProcessIncomingBlockData(buffer[1..]);
-                        break;
-                    }
-
-                    /* Provide block count */  case 4: {
-                        ulong count = BitConverter.ToUInt64(buffer.AsSpan()[1..]);
-                        if (count <= _blockDatabase.GetBlockCount()) {
-                            GetNewBlocksFromBestPeerIfDone();
-                            break;
-                        }
-
-                        if (FixingChain && count <= _longestChainLength) {
-                            GetNewBlocksFromBestPeerIfDone();
-                            break;
-                        }
-
-                        _longestChainLength = count;
-                        _longestChainPeer = peerId;
+                /* Provide block count */  case 4: {
+                    ulong count = BitConverter.ToUInt64(buffer.AsSpan()[1..]);
+                    if (count > _blockDatabase.GetBlockCount()) {
                         FixingChain = true;
-
-                        GetNewBlocksFromBestPeerIfDone();
-                        break;
+                        Logger.Info("NODE", $"Chain is out of date. Fetching {_blockDatabase.GetBlockCount() - count} blocks.");
+                        _remoteHighestChainTip = count > _remoteHighestChainTip ? count : _remoteHighestChainTip;
+                        AskForBlockRange(_blockDatabase.GetBlockCount(), count, socket);
                     }
-                    
-                    /* Provide Peer        */  case 5: {
-                        byte[] ipBytes = buffer[1..5];
-                        byte[] portBytes = buffer[5..9];
-                        IPAddress ip = new(ipBytes);
-                        int port = BitConverter.ToInt32(portBytes);
-                        IPEndPoint newPeer = new(ip, port);
-                        if (newPeer.GetHashCode() == peerId) {
-                            Logger.Debug("NODE", "Someone tried to make us connect to ourselves");
-                            break;
-                        }
-                        Thread thread = new(() => ConnectToPeer(newPeer, 10_000));  // 10 sec timeout
-                        thread.Start();
-                        break;
-                    }
-                    
-                    /* Provide Transaction */  case 8: {
-                        Transaction transaction = Transaction.Deserialize(buffer[1..bytesRead]);
-                        
-                        // Validate transaction
-                        if (!ValidateTransaction(transaction)) {
-                            Logger.Debug("NODE", "Transaction rejected, invalid");
-                            break;
-                        }
-
-                        lock (_pendingTransactionsLock) {
-                            _pendingTransactions.Add(transaction);
-                        }
-                        Logger.Info("NODE", "--------------- Transaction Received ---------------");
-                        break;
-                    }
-                    
-                    /* Provide block range */ case 9: {
-                        int nextIndex = 1;
-                        while (nextIndex < buffer.Length) {
-                            byte[] blockDataSizeBytes = buffer[nextIndex..(nextIndex + 4)];
-                            Debug.Assert(blockDataSizeBytes.Length == 4);
-                            int blockDataSize = BitConverter.ToInt32(blockDataSizeBytes);
-                            ProcessIncomingBlockData(buffer[(nextIndex + 4)..(nextIndex + 4 + blockDataSize)]);
-                            nextIndex += 4 + blockDataSize;
-                        }
-                        break;
-                    }
-                    
-                    default:
-                        Logger.Debug("NODE", $"Invalid packet type: {packetType}");
-                        break;
+                    break;
                 }
+                
+                /* Provide Peer        */  case 5: {
+                    byte[] ipBytes = buffer[1..5];
+                    byte[] portBytes = buffer[5..9];
+                    IPAddress ip = new(ipBytes);
+                    int port = BitConverter.ToInt32(portBytes);
+                    IPEndPoint newPeer = new(ip, port);
+                    ConnectToPeer(newPeer);
+                    break;
+                }
+                
+                /* Provide Transaction */  case 8: {
+                    Transaction transaction = Transaction.Deserialize(buffer[1..bytesRead]);
+                    
+                    // Validate transaction
+                    if (!ValidateTransaction(transaction)) {
+                        Logger.Debug("NODE", "Transaction rejected, invalid");
+                        break;
+                    }
+
+                    lock (_pendingTransactionsLock) {
+                        _pendingTransactions.Add(transaction);
+                    }
+                    Logger.Info("NODE", "--------------- Transaction Received ---------------");
+                    break;
+                }
+                
+                /* Provide block range */ case 9: {
+                    int nextIndex = 1;
+                    while (nextIndex < buffer.Length) {
+                        byte[] blockDataSizeBytes = buffer[nextIndex..(nextIndex + 4)];
+                        Debug.Assert(blockDataSizeBytes.Length == 4);
+                        int blockDataSize = BitConverter.ToInt32(blockDataSizeBytes);
+                        ProcessIncomingBlockData(buffer[(nextIndex + 4)..(nextIndex + 4 + blockDataSize)]);
+                        nextIndex += 4 + blockDataSize;
+                    }
+                    break;
+                }
+                
+                default:
+                    Logger.Debug("NODE", $"Invalid packet type: {packetType}");
+                    break;
             }
         }
         catch (Exception e) {
-            Logger.Debug("NODE", "Peer disconnected: " + e.Message);
-            Logger.Debug("NODE", e.ToString());
+            Logger.Error("NODE", "Peer handler crash: " + e.Message);
+            Logger.Error("NODE", e.ToString());
         }
         finally {
             lock (_peersLock) {
-                _peers.Remove(_peers.Find(p => p.GetHashCode() == peerId));
+                //_peers.Remove(_peers.Find(p => p.GetHashCode() == peer)!);
             }
         }
         
@@ -566,6 +463,7 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
     private void ProcessIncomingBlockData(byte[] buffer) {
         ulong index = BitConverter.ToUInt64(buffer.AsSpan()[..8]);
         if (index != _blockDatabase.GetBlockCount() && !FixingChain) {
+            Logger.Debug("NODE", "Ignoring new block from peer because it's not our next one");
             return; // We only accept the next block
         }
 
@@ -581,9 +479,9 @@ public class DemCoinNode(IPEndPoint? seedNode, bool listenForPeers = true) {
                         
         // Block is valid
         AddBlockToDatabase(block);
-        Logger.Info("NODE", "Block added. " + (FixingChain ? $"({_blockDatabase.GetBlockCount()}/{_longestChainLength})" : ""));
+        Logger.Info("NODE", "Block added. " + (FixingChain ? $"({_blockDatabase.GetBlockCount()}/{_remoteHighestChainTip})" : ""));
 
-        if (_blockDatabase.GetBlockCount() == _longestChainLength) {
+        if (_blockDatabase.GetBlockCount() == _remoteHighestChainTip) {
             FixingChain = false;
             Logger.Info("NODE", "Chain has been fixed :)");
         }

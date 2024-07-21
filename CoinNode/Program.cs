@@ -6,7 +6,7 @@ namespace CoinNode;
 
 internal static class Program {
     public static void Main(string[] args) {
-        DemCoinNode node = new(args.Contains("noseed") ? new IPEndPoint(Dns.GetHostAddresses("me.zaneharrison.com")[0], 9534) : null, !args.Contains("nohost"));
+        DemCoinNode node = new(args.Contains("noseed") ? new IPEndPoint(Dns.GetHostAddresses("me.zaneharrison.com")[0], 9534) : null);
         node.StartNode();
         
         Console.WriteLine("Started node.");
@@ -14,6 +14,7 @@ internal static class Program {
         if (!args.Contains("nowait")) {
             Console.WriteLine("Waiting for connection (Use arg 'nowait' to skip)...");
             node.ConnectedToNetSwitch.Wait();
+            Console.WriteLine("A connection has been made!");
         }
 
         if (args.Contains("nowallet")) {
