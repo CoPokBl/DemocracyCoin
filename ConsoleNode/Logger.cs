@@ -1,4 +1,4 @@
-namespace CoinNode;
+namespace ConsoleNode;
 
 public static class Logger {
     public static bool EnableDebug = true;

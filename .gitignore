@@ -4,3 +4,6 @@
 *.tar.xz
 *.rar
 *.7zip
+**/bin/
+**/obj/
+*.user

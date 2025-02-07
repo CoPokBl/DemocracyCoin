@@ -13,14 +13,20 @@
       <driver-ref>sqlite.xerial</driver-ref>
       <synchronize>true</synchronize>
       <jdbc-driver>org.sqlite.JDBC</jdbc-driver>
-      <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/CoinNode/bin/Debug/net8.0/blockchain.db</jdbc-url>
+      <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/ConsoleNode/bin/Debug/net8.0/9534</jdbc-url>
+      <jdbc-additional-properties>
+        <property name="com.intellij.clouds.kubernetes.db.enabled" value="false" />
+      </jdbc-additional-properties>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
     <data-source source="LOCAL" name="peer blockchain" uuid="92665b70-1abb-4fb5-ad62-5acd2d27f38d">
       <driver-ref>sqlite.xerial</driver-ref>
       <synchronize>true</synchronize>
       <jdbc-driver>org.sqlite.JDBC</jdbc-driver>
-      <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/../../../Crypto/DemocracyCoin/Node1/blockchain.db</jdbc-url>
+      <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/ConsoleNode/bin/Debug/net8.0/9533</jdbc-url>
+      <jdbc-additional-properties>
+        <property name="com.intellij.clouds.kubernetes.db.enabled" value="false" />
+      </jdbc-additional-properties>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
   </component>
