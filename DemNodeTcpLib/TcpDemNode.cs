@@ -9,7 +9,7 @@ namespace DemNodeTcpLib;
 public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 9534) {
     private const int MaxConnections = 10;
     private const int BufferSize = 1_048_576;  // 1MB
-    private const int DefaultPort = 9534;
+    public const int DefaultPort = 9534;
 
     public event Action<string> Log = _ => { };
     
@@ -274,7 +274,7 @@ public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 953
                         }
 
                         if (provideCommonBlock.ChainHeight < node.ChainHeight) {
-                            Log("Our chain it better.");
+                            Log("Our chain is better.");
                             break;
                         }
 
@@ -304,6 +304,44 @@ public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 953
                         // Now request the blocks
                         await stream.SendPacket(request);
                         Log("New blocks requested");
+                        break;
+                    }
+
+                    case RequestPeersPacket: {
+                        string[] ipPeers = _clients
+                            .Where(c => c != client)  // Don't send them themselves
+                            .Select(c => c.Client.RemoteEndPoint)
+                            .OfType<IPEndPoint>()
+                            .Select(ipe => ipe.Address.ToString())
+                            .ToArray();
+                        await stream.SendPacket(new ProvidePeersPacket(ipPeers));
+                        Log($"Sent our peers to {client.Client.RemoteEndPoint}");
+                        break;
+                    }
+
+                    case ProvidePeersPacket providePeers: {
+                        Log($"We have been give {providePeers.Peers.Length} peers by {client.Client.RemoteEndPoint}");
+
+                        IPAddress[] existingPeers = _clients
+                            .Select(c => c.Client.RemoteEndPoint)
+                            .OfType<IPEndPoint>()
+                            .Select(ep => ep.Address)
+                            .ToArray();
+
+                        IPEndPoint[] newPeers = providePeers.Peers
+                            .Where(p => !existingPeers.Any(ep => ep.Equals(p.Address)))
+                            .ToArray();
+
+                        Log($"{newPeers.Length} of the peers are valid new peers");
+                        foreach (IPEndPoint peer in newPeers) {
+                            try {
+                                await ConnectToClient(peer);
+                            }
+                            catch (IOException) {
+                                Log($"Failed to connect to {peer}");
+                            }
+                        }
+                        
                         break;
                     }
 
@@ -362,10 +400,12 @@ public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 953
         client.Close();
     }
 
-    public async Task ConnectToClient(string ip, int clientPort) {
-        Log($"Connecting to {ip}:{clientPort}");
+    public Task ConnectToClient(string ip, int clientPort) => ConnectToClient(new IPEndPoint(IPAddress.Parse(ip), clientPort));
+    
+    public async Task ConnectToClient(IPEndPoint endPoint) {
+        Log($"Connecting to {endPoint}");
         TcpClient client = new();
-        await client.ConnectAsync(ip, clientPort);
+        await client.ConnectAsync(endPoint);
         Log("Connection success, handling new client");
         _clients.Add(client);
 

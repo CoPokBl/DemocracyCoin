@@ -8,8 +8,6 @@ public class BlockDatabaseSqlite : IBlockDatabase {
     private const string ConnectionString = "Data Source=";
     private readonly SQLiteConnection _connection;
 
-    private Block? _cachedLastBlock;
-
     public BlockDatabaseSqlite(string path) {
         _connection = new SQLiteConnection(ConnectionString + path + ";");
         _connection.Open();
@@ -42,14 +40,11 @@ public class BlockDatabaseSqlite : IBlockDatabase {
     
     public ulong GetBlockCount() {
         using SQLiteCommand cmd = new("SELECT COUNT(*) FROM blocks;", _connection);
-        return Convert.ToUInt64(cmd.ExecuteScalar()!);
+        ulong val = Convert.ToUInt64(cmd.ExecuteScalar()!);
+        return val;
     }
     
     public Block? GetLastBlock(ulong skip = 0) {
-        if (skip == 0 && _cachedLastBlock != null) {
-            return _cachedLastBlock;
-        }
-        
         using SQLiteCommand cmd = new("SELECT * FROM blocks ORDER BY ROWID DESC LIMIT 1 OFFSET @skip;", _connection);
         cmd.Parameters.AddWithValue("@skip", skip);
         using SQLiteDataReader reader = cmd.ExecuteReader();
@@ -59,10 +54,6 @@ public class BlockDatabaseSqlite : IBlockDatabase {
         
         byte[] data = Convert.FromBase64String(reader.GetString(reader.GetOrdinal("data")));
         Block block = Block.Deserialize(data);
-        
-        if (skip == 0) {
-            _cachedLastBlock = block;
-        }
         return block;
     }
     
@@ -122,7 +113,6 @@ public class BlockDatabaseSqlite : IBlockDatabase {
         using SQLiteCommand cmd = new("DELETE FROM blocks WHERE ROWID > @target; DELETE FROM transactions WHERE ROWID > @target;", _connection);
         cmd.Parameters.AddWithValue("@target", index+1);
         cmd.ExecuteNonQuery();
-        _cachedLastBlock = null;
     }
 
     public void InsertBlock(Block block) {
@@ -130,8 +120,6 @@ public class BlockDatabaseSqlite : IBlockDatabase {
         cmd.Parameters.AddWithValue("@hash", Convert.ToBase64String(block.HashHeader()));
         cmd.Parameters.AddWithValue("@data", Convert.ToBase64String(block.Serialize()));
         cmd.ExecuteNonQuery();
-        
-        _cachedLastBlock = null;
     }
     
     public void InsertTransaction(Transaction transaction, ulong block) {

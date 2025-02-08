@@ -35,4 +35,19 @@ public class DemCoinUtilsTest {
         
         Assert.That(value2, Is.EqualTo(value));
     }
+
+    [Test]
+    public void BigIntMult() {
+        for (int i = 0; i < 100; i++) {
+            int max = (int)Math.Sqrt(int.MaxValue);
+            int a = Random.Shared.Next(max);
+            double b = Random.Shared.NextDouble() * max;
+
+            BigInteger ba = a;
+            BigInteger result = ba.Multiply(b);
+            int expected = (int)(a * b);
+            
+            Assert.That(result, Is.EqualTo((BigInteger)expected));
+        }
+    }
 }

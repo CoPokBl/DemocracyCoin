@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
 using System.Security.Cryptography;
+using DemCoinLib.Db;
 using Org.BouncyCastle.Crypto.Digests;
 using SimpleBase;
 using HashAlgorithm = NSec.Cryptography.HashAlgorithm;
@@ -168,7 +169,7 @@ public static class DemCoinUtils {
     }
     
     public static byte[] ToInt256Bytes(BigInteger value) {
-        byte[] bigIntegerBytes = value.ToByteArray();
+        byte[] bigIntegerBytes = value.ToByteArray(isUnsigned:true);
 
         if (bigIntegerBytes.Length > 32) {
             throw new Exception("Value is too large to fit in 256 bits.");
@@ -181,5 +182,30 @@ public static class DemCoinUtils {
         }
 
         return bigIntegerBytes;
+    }
+
+    public static byte[] Repeat(this byte b, int times) {
+        byte[] val = new byte[times];
+        for (int i = 0; i < val.Length; i++) {
+            val[i] = b;
+        }
+
+        return val;
+    }
+
+    public static BigInteger Multiply(this BigInteger num, double val) {
+        int bigVal = (int)val;
+        double decVal = val - bigVal;
+
+        BigInteger result = new(num.ToByteArray(true), true);
+
+        result *= bigVal;
+        result += (BigInteger)((double)num / (1.0 / decVal));
+
+        return result;
+    }
+
+    public static CachedBlockDatabase EnableCache(this IBlockDatabase db) {
+        return new CachedBlockDatabase(db);
     }
 }

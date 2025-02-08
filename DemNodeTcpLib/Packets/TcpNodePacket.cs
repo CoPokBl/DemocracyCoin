@@ -17,7 +17,9 @@ public abstract class TcpNodePacket {
         { 6, typeof(RequestBlocksPacket) },
         { 7, typeof(ProvideBlocksPacket) },
         { 8, typeof(LocateCommonBlockPacket) },
-        { 9, typeof(ProvideCommonBlockPacket) }
+        { 9, typeof(ProvideCommonBlockPacket) },
+        { 10, typeof(RequestPeersPacket) },
+        { 11, typeof(ProvidePeersPacket) }
     };
 
     public byte[] Serialize() {

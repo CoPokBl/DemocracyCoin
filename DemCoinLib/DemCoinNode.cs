@@ -1,21 +1,21 @@
-using System.Diagnostics;
 using System.Numerics;
 using DemCoinLib.Db;
 using DemCoinLib.Structs;
 
 namespace DemCoinLib;
 
-public class DemCoinNode(string dbFile = "blockchain.db") {
+public class DemCoinNode {
     // NETWORK CONSTS
     public const string NetworkVersion = "DemCoin v0.0.1";
     public const int DiffAdjustmentInterval = 10;  // How many blocks before we adjust the difficulty
     public const int TargetSecsPerBlock = 60;  // How many seconds we want a block to take to mine
     public const int MaxAllowedTimeDrift = 60;  // How many seconds we allow a block to be off by
     public const int MaxAdjustmentFactor = 4;  // How much we allow the difficulty to change by (diff * factor or diff / factor)
-    public const int BigMaxAdjustmentFactor = 4;  // How much we allow the difficulty to change by (diff * factor or diff / factor)
+    public const int BigAdjustmentMultiplier = 1;  // How much we allow the difficulty to change by (diff * factor or diff / factor)
     public const int BigAdjustmentBlocks = 100;  // How many blocks during which we can make bigger adjustments to the difficulty
     public const double MaxMinerReward = 20;  // The maximum reward a miner can get for mining a block
     public const double MinMinerReward = 0.2;  // The minimum reward a miner can get for mining a block
+    public const double MinerRewardScale = 0.01;  // How late the reward spikes
     public static readonly byte[] CoinbasePublicKey = new byte[64];  // The public key of the coinbase, used to specify a coinbase transaction, should also be used as signature
     
     // RUNTIME SETTINGS
@@ -29,17 +29,27 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
     // PROPERTIES
     public Block LastBlock => BlockDatabase.GetLastBlock()!;
     public ulong ChainHeight => BlockDatabase.GetBlockCount();
-    public int TargetTimePerInterval => DiffAdjustmentInterval * TargetSecsPerBlock;  // How long we want the adjustment interval to take
+    public const int TargetTimePerInterval = DiffAdjustmentInterval * TargetSecsPerBlock; // How long we want the adjustment interval to take
+    public static readonly double MaxDifficulty = Math.Pow(2, 256);
+    public static readonly BigInteger MaxDifficultyInt = new(((byte)255).Repeat(32), true);
     
-    public IBlockDatabase BlockDatabase = null!;
+    public IBlockDatabase BlockDatabase;
     private readonly List<Transaction> _pendingTransactions = [];  // These are currently volatile.
 
     private readonly object _pendingTransactionsLock = new();
     private readonly object _mineLock = new();
 
-    public void Init() {
-        BlockDatabase = new BlockDatabaseSqlite(dbFile);
+    public DemCoinNode(string dbName) {
+        BlockDatabase = new BlockDatabaseSqlite(dbName).EnableCache();
+        
+        if (ChainHeight == 0) {
+            AddChainStartBlock();
+        }
+    }
 
+    public DemCoinNode(IBlockDatabase database) {
+        BlockDatabase = database;
+        
         if (ChainHeight == 0) {
             AddChainStartBlock();
         }
@@ -49,11 +59,11 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
         ulong chainHeight = ChainHeight;
         for (ulong i = 0; i < chainHeight; i++) {
             Block block = BlockDatabase.GetBlockByIndex(i)!;
-            if (ValidateBlock(block, chainHeight - i)) {
+            if (ValidateBlock(block, out string? reason, chainHeight - i, checkTimestamp:false)) {
                 Console.WriteLine($"Block {i} is valid");
             }
             else {
-                Console.WriteLine($"Block {i} is invalid!");
+                Console.WriteLine($"Block {i} is invalid! ({reason})");
                 return false;
             }
         }
@@ -72,7 +82,7 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
             // Coinbase, we get a reward :)
             Sender = CoinbasePublicKey,
             Recipient = coinbaseRecipient.AddressBytes,
-            Amount = 1, // TODO
+            Amount = GetCurrentMinerReward(),
             Signature = CoinbasePublicKey,
             TransactionNumber = 0,
             TransactionFee = 0
@@ -91,7 +101,7 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
             PrevHeaderHash = LastBlock.HashHeader(),
             Transactions = transactions.ToArray(),
             TimeStamp = DemCoinUtils.GetUtcTimestamp(),
-            Difficulty = GetCurrentDifficulty()
+            Difficulty = DemCoinUtils.ToInt256Bytes(GetCurrentDifficulty())
         };
         block.SetNetworkVersion(NetworkVersion);
         block.CalculateTransactionsSig();
@@ -127,44 +137,70 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
         }
     }
 
+    private BigInteger _cDiff;
+    private ulong _cDiffHeight = 0;
+    public BigInteger GetCurrentDifficulty(ulong skip = 0, IBlockDatabase? db = null, bool cache = false) {
+        if (cache && _cDiffHeight == ChainHeight) {
+            return _cDiff;
+        }
+        
+        db ??= BlockDatabase;
+
+        if ((db.GetBlockCount() - skip) % DiffAdjustmentInterval != 0) {
+            byte[]? diff = db.GetLastBlock(skip)?.Difficulty;
+            return diff == null ? 1 : new BigInteger(diff, true);
+        }
+
+        // Calculate new difficulty
+        Block firstBlock = db.GetBlockByIndex(db.GetBlockCount() - skip - DiffAdjustmentInterval)!;
+        Block lastBlock = db.GetLastBlock(skip)!;
+
+        ulong timeTaken = lastBlock.TimeStamp - firstBlock.TimeStamp;
+
+        bool bigAdjust = db.GetBlockCount() - skip <= BigAdjustmentBlocks;
+        double adjustment = (double)TargetTimePerInterval / timeTaken;
+        if (adjustment > MaxAdjustmentFactor) {
+            adjustment = MaxAdjustmentFactor;
+        }
+
+        if (adjustment < 1.0 / MaxAdjustmentFactor) {
+            adjustment = 1.0 / MaxAdjustmentFactor;
+        }
+
+        if (bigAdjust) adjustment *= BigAdjustmentMultiplier;
+
+        BigInteger lastDiff = new(lastBlock.Difficulty, true);
+
+        BigInteger result = lastDiff.Multiply(adjustment);
+        if (result < 1) {
+            result = 1;
+        }
+        
+        return result;
+    }
+
     /// <summary>
     /// Calculate the difficulty of mining the next block on the chain.
     /// </summary>
     /// <param name="skip">How many blocks to go back in the database for calculate for.</param>
     /// <param name="db">Override db to use to perform the calculation.</param>
+    /// <param name="cache">Whether to cache (and use the cache for) the current difficulty.</param>
     /// <returns></returns>
-    public byte[] GetCurrentDifficulty(ulong skip = 0, IBlockDatabase? db = null) {
-        db ??= BlockDatabase;
-        
-        if ((db.GetBlockCount() - skip) % DiffAdjustmentInterval != 0) {
-            return db.GetLastBlock(skip)?.Difficulty ?? DemCoinUtils.ToInt256Bytes(1);
-        }
-        
-        // Calculate new difficulty
-        Block firstBlock = db.GetBlockByIndex(db.GetBlockCount() - skip - DiffAdjustmentInterval)!;
-        Block lastBlock = db.GetLastBlock(skip)!;
-        
-        ulong timeTaken = lastBlock.TimeStamp - firstBlock.TimeStamp;
+    public byte[] GetCurrentTargetValue(ulong skip = 0, IBlockDatabase? db = null, bool cache = false) {
+        return DemCoinUtils.ToInt256Bytes(MaxDifficultyInt / GetCurrentDifficulty(skip, db, cache));
+    }
 
-        int maxAdjustment = db.GetBlockCount() - skip <= BigAdjustmentBlocks ? BigMaxAdjustmentFactor : MaxAdjustmentFactor;
-        
-        double adjustment = timeTaken / (double)TargetTimePerInterval;
-        if (adjustment > maxAdjustment) {
-            adjustment = maxAdjustment;
-        }
-
-        if (adjustment < 1.0 / maxAdjustment) {
-            adjustment = 1.0 / maxAdjustment;
-        }
-        
-        BigInteger lastDiff = new(lastBlock.Difficulty);
-        lastDiff *= (BigInteger)adjustment;
-
-        return DemCoinUtils.ToInt256Bytes(lastDiff);
+    public double GetCurrentMinerReward(ulong skip = 0, IBlockDatabase? db = null) {
+        return GetCurrentMinerReward(GetCurrentDifficulty(skip, db).ToByteArray(true));
     }
     
-    public double GetCurrentMinerReward() {  // Gets reward for next block based on current difficulty
-        return 1;  // TODO: Make this based on difficulty
+    // This method is disgusting
+    public static double GetCurrentMinerReward(byte[] difficulty) {  // Gets reward for next block based on current difficulty
+        double diff = (double) new BigInteger(difficulty, true);
+
+        double reward = MinMinerReward +
+                        Math.Pow(diff / MaxDifficulty, MinerRewardScale) * (MaxMinerReward - MinMinerReward);
+        return Math.Round(reward, 2);
     }
     
     public void AddChainStartBlock() {
@@ -195,7 +231,11 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
             }
         
             AddBlockToDatabase(block);
-            Debug.Assert(ValidateBlock(LastBlock, 1), "Block added to database incorrectly");
+            
+            if (!ValidateBlock(LastBlock, out string? reason, 1)) {
+                throw new Exception("Block was added to database incorrectly: " + reason);
+            }
+            // Debug.Assert(ValidateBlock(LastBlock, 1), "Block added to database incorrectly");
 
             foreach (Transaction transaction in block.Transactions) {
                 _pendingTransactions.Remove(transaction);
@@ -255,31 +295,22 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
         return BlockDatabase.GetLastTransactionNumber(walletAddress) + 1;
     }
 
-    public bool IsBlockNonceValid(Block block, bool calcTs = true) {
-        return IsHashValidBlock(block.HashHeader(calcTs), GetCurrentDifficulty());
+    public bool IsBlockNonceValid(Block block, bool calcTs = true, ulong skip = 0, bool cache = false, IBlockDatabase? db = null) {
+        return IsHashValidBlock(block.HashHeader(calcTs), GetCurrentTargetValue(skip:skip, cache:cache, db:db));
     }
 
-    private static bool IsHashValidBlock(IReadOnlyList<byte> hash, byte[] difficulty) {
-        return IsHashValidBlock(hash, new BigInteger(difficulty));
-    }
-
-    private static bool IsHashValidBlock(IReadOnlyList<byte> hash, BigInteger difficulty) {
-        // Since 'difficulty' is a 64-bit number, any hash with non-zero
-        // data in the top 192 bits (24 bytes) is automatically larger.
-        for (int i = 0; i < 24; i++) {
-            if (hash[i] != 0)
-                return true; // 256-bit hash is definitely > 64-bit difficulty
+    public static bool IsHashValidBlock(IReadOnlyList<byte> hash, byte[] target) {
+        // Compare hash to diffBytes in little-endian order to see if hash > difficulty.
+        // Return as soon as we find a differing byte.
+        for (int i = 31; i >= 0; i--) {
+            if (hash[i] != target[i]) {
+                return hash[i] < target[i];
+            }
         }
 
-        // If the top 24 bytes are all zero, parse the last 8 bytes
-        // (big-endian) into a 64-bit integer and compare.
-        ulong value = 0;
-        for (int i = 24; i < 32; i++) {
-            value = (value << 8) | hash[i];
-        }
-
-        Console.WriteLine("Checking that " + value + " is more than " + difficulty);
-        return value > difficulty;
+        // If every byte matches, then hash == difficulty,
+        // so 'hash' is not strictly greater; return false.
+        return false;
     }
 
     /// <summary>
@@ -357,12 +388,12 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
             return false;
         }
 
-        if (!IsBlockNonceValid(block, false)) {
+        if (!IsBlockNonceValid(block, calcTransactionSigs, skip, db:db)) {
             failReason = "Invalid nonce";
             return false;
         }
 
-        if (!block.Difficulty.SequenceEqual(GetCurrentDifficulty(skip, db))) {
+        if (!block.Difficulty.SequenceEqual(DemCoinUtils.ToInt256Bytes(GetCurrentDifficulty(skip, db)))) {
             failReason = "Incorrect difficulty";
             return false;
         }
@@ -400,7 +431,7 @@ public class DemCoinNode(string dbFile = "blockchain.db") {
             }
         
             // Validate coinbase
-            if (coinbase == null || coinbase.Amount > totalFees + GetCurrentMinerReward()) {
+            if (coinbase == null || coinbase.Amount > totalFees + GetCurrentMinerReward(skip, db)) {
                 failReason = coinbase == null ? "Missing coinbase" : "Incorrect coinbase reward amount";
                 return false;
             }
