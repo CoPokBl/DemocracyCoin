@@ -1,0 +1,252 @@
+[gd_scene load_steps=7 format=3 uid="uid://c3rl8vuuk0yx7"]
+
+[ext_resource type="Script" uid="uid://cgidsx4hviwim" path="res://pages/Main.cs" id="1_dlxma"]
+[ext_resource type="Theme" uid="uid://2ysl0y4n643w" path="res://themes/primary.tres" id="1_ft2jt"]
+
+[sub_resource type="LabelSettings" id="LabelSettings_hk7jm"]
+font_size = 54
+
+[sub_resource type="LabelSettings" id="LabelSettings_jlli8"]
+font_size = 54
+
+[sub_resource type="LabelSettings" id="LabelSettings_vrwt4"]
+font_size = 20
+
+[sub_resource type="LabelSettings" id="LabelSettings_boxab"]
+font_size = 54
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1_ft2jt")
+script = ExtResource("1_dlxma")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.192157, 0.2, 0.207843, 1)
+
+[node name="Padder" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Split" type="HBoxContainer" parent="Padder"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 20
+
+[node name="Vert1" type="PanelContainer" parent="Padder/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MarginContainer" type="MarginContainer" parent="Padder/Split/Vert1"]
+layout_mode = 2
+
+[node name="Vert" type="VBoxContainer" parent="Padder/Split/Vert1/MarginContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Label" type="Label" parent="Padder/Split/Vert1/MarginContainer/Vert"]
+layout_mode = 2
+text = "Transfer"
+label_settings = SubResource("LabelSettings_hk7jm")
+horizontal_alignment = 1
+
+[node name="Payee" type="LineEdit" parent="Padder/Split/Vert1/MarginContainer/Vert"]
+unique_name_in_owner = true
+layout_mode = 2
+placeholder_text = "Payee Address"
+
+[node name="SendAmount" type="SpinBox" parent="Padder/Split/Vert1/MarginContainer/Vert"]
+unique_name_in_owner = true
+layout_mode = 2
+max_value = 999.0
+step = 0.001
+value = 10.0
+allow_greater = true
+prefix = "Amount:"
+suffix = "dc"
+
+[node name="SendMessage" type="TextEdit" parent="Padder/Split/Vert1/MarginContainer/Vert"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+placeholder_text = "Message"
+
+[node name="SendMoney" type="Button" parent="Padder/Split/Vert1/MarginContainer/Vert"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Send"
+
+[node name="Vert2" type="PanelContainer" parent="Padder/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MarginContainer" type="MarginContainer" parent="Padder/Split/Vert2"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Vert2" type="VBoxContainer" parent="Padder/Split/Vert2/MarginContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Title" type="Label" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+layout_mode = 2
+text = "Wallet"
+label_settings = SubResource("LabelSettings_hk7jm")
+horizontal_alignment = 1
+
+[node name="HSeparator" type="HSeparator" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+layout_mode = 2
+
+[node name="Balance" type="Label" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Loading..."
+label_settings = SubResource("LabelSettings_jlli8")
+horizontal_alignment = 1
+
+[node name="RefreshBalance" type="Button" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Refresh"
+
+[node name="HSeparator2" type="HSeparator" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+layout_mode = 2
+text = "Manage"
+label_settings = SubResource("LabelSettings_vrwt4")
+horizontal_alignment = 1
+
+[node name="WalletDisplay" type="ScrollContainer" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+custom_minimum_size = Vector2(0, 76.005)
+layout_mode = 2
+
+[node name="WalletAddress" type="Label" parent="Padder/Split/Vert2/MarginContainer/Vert2/WalletDisplay"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 59.23)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 6
+text = "asdsadsad
+sadas
+das
+d"
+autowrap_mode = 1
+
+[node name="CopyAddress" type="Button" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Copy Wallet Address"
+
+[node name="ExportWallet" type="Button" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Export Wallet"
+
+[node name="ImportWallet" type="Button" parent="Padder/Split/Vert2/MarginContainer/Vert2"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Import Wallet"
+
+[node name="Vert3" type="PanelContainer" parent="Padder/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MarginContainer" type="MarginContainer" parent="Padder/Split/Vert3"]
+layout_mode = 2
+
+[node name="Vert3" type="VBoxContainer" parent="Padder/Split/Vert3/MarginContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Label" type="Label" parent="Padder/Split/Vert3/MarginContainer/Vert3"]
+layout_mode = 2
+text = "Miner"
+label_settings = SubResource("LabelSettings_boxab")
+horizontal_alignment = 1
+
+[node name="HSeparator" type="HSeparator" parent="Padder/Split/Vert3/MarginContainer/Vert3"]
+layout_mode = 2
+
+[node name="MiningStatus" type="Label" parent="Padder/Split/Vert3/MarginContainer/Vert3"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Status: Disabled
+Hashes: 10000000
+Blocks Mined: 0"
+horizontal_alignment = 1
+
+[node name="MiningThreads" type="SpinBox" parent="Padder/Split/Vert3/MarginContainer/Vert3"]
+unique_name_in_owner = true
+layout_mode = 2
+min_value = 1.0
+max_value = 16.0
+value = 1.0
+rounded = true
+allow_greater = true
+prefix = "Threads:"
+
+[node name="ToggleMining" type="Button" parent="Padder/Split/Vert3/MarginContainer/Vert3"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Start Mining"
+
+[node name="TransactionSent" type="AcceptDialog" parent="."]
+title = "Transaction"
+position = Vector2i(175, 200)
+size = Vector2i(803, 106)
+dialog_text = "Your transaction has been sent!
+It may take up to 10 minutes to process and for the money to be sent."
+
+[node name="WalletExported" type="AcceptDialog" parent="."]
+auto_translate_mode = 1
+title = "Wallet"
+position = Vector2i(175, 200)
+size = Vector2i(730, 106)
+dialog_text = "Your wallet has been exported and the seed phrase version of it has been copied to your clipboard. 
+Paste it into where you want it."
+
+[node name="ImportWallet" type="ConfirmationDialog" parent="."]
+auto_translate_mode = 1
+title = "Wallet"
+position = Vector2i(175, 200)
+size = Vector2i(730, 167)
+
+[node name="Vert" type="VBoxContainer" parent="ImportWallet"]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 722.0
+offset_bottom = 118.0
+
+[node name="Label" type="Label" parent="ImportWallet/Vert"]
+layout_mode = 2
+text = "Please enter your seed phrase in the box provided.
+
+Warning: THIS WILL DELETE YOUR CURRENT WALLET."
+
+[node name="WalletXml" type="LineEdit" parent="ImportWallet/Vert"]
+unique_name_in_owner = true
+layout_mode = 2
+placeholder_text = "Enter your seed phrase..."
+
+[node name="Error" type="AcceptDialog" parent="."]
+auto_translate_mode = 1
+title = "Error"
+position = Vector2i(175, 200)
+size = Vector2i(803, 106)
+dialog_text = "An error has occured"

@@ -1,0 +1,19 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Democracy Coin Wallet", "Democracy Coin Wallet.csproj", "{2DDF0612-2661-4521-8E49-8F1D429FBEFF}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+	Debug|Any CPU = Debug|Any CPU
+	ExportDebug|Any CPU = ExportDebug|Any CPU
+	ExportRelease|Any CPU = ExportRelease|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU
+	EndGlobalSection
+EndGlobal

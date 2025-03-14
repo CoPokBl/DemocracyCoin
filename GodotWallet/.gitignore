@@ -1,0 +1,13 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+wallet.xml
+wallet.txt
+.idea
+/Export/
+/export/
+/out/
+/Build/
+/build/
+Democracy Coin Wallet.sln.DotSettings.user
+blockchain.db

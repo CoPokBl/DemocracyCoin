@@ -1,0 +1,24 @@
+[gd_resource type="Theme" load_steps=3 format=3 uid="uid://2ysl0y4n643w"]
+
+[sub_resource type="StyleBoxLine" id="StyleBoxLine_36t0c"]
+color = Color(0.125478, 0.135737, 0.135737, 1)
+thickness = 11
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_pjx3v"]
+bg_color = Color(0.168627, 0.180392, 0.184314, 1)
+corner_radius_top_left = 20
+corner_radius_top_right = 20
+corner_radius_bottom_right = 20
+corner_radius_bottom_left = 20
+shadow_size = 10
+shadow_offset = Vector2(10, 10)
+
+[resource]
+HSeparator/constants/separation = 21
+HSeparator/styles/separator = SubResource("StyleBoxLine_36t0c")
+MarginContainer/constants/margin_bottom = 12
+MarginContainer/constants/margin_left = 16
+MarginContainer/constants/margin_right = 16
+MarginContainer/constants/margin_top = 12
+PanelContainer/styles/panel = SubResource("StyleBoxFlat_pjx3v")
+VBoxContainer/constants/separation = 8
