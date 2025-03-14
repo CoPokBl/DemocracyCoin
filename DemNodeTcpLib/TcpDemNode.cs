@@ -6,8 +6,8 @@ using DemNodeTcpLib.Packets;
 
 namespace DemNodeTcpLib;
 
-public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 9534) {
-    private const int MaxConnections = 10;
+public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 9534, int maxPeers = 8) {
+    private readonly int _maxConnections = maxPeers;
     private const int BufferSize = 1_048_576;  // 1MB
     public const int DefaultPort = 9534;
 
@@ -211,6 +211,11 @@ public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 953
                             Log($"Client ({client.Client.RemoteEndPoint}) requested invalid block range: {requestBlocks.StartIndex}-{requestBlocks.EndIndex}");
                             return;
                         }
+
+                        const ulong maxBlocks = 100;
+                        if (requestBlocks.EndIndex - requestBlocks.StartIndex > maxBlocks) {
+                            requestBlocks.EndIndex = requestBlocks.StartIndex + maxBlocks;
+                        }
                         
                         Block[] blocks =
                             node.BlockDatabase.GetBlockRange(requestBlocks.StartIndex, requestBlocks.EndIndex);
@@ -233,11 +238,12 @@ public class TcpDemNode(DemCoinNode node, string[]? peers = null, int port = 953
                                 continue;
                             }
 
-                            Log("Peer mass provided a valid block: " + providedIndex);
-                            node.BlockDatabase.InsertBlock(block);  // Manually insert
+                            Log("Peer mass provided a valid block: " + (providedIndex + (ulong)i));
+                            node.AddBlockToDatabase(block);  // Manually insert
                         }
 
-                        Log($"Peer ({client.Client.RemoteEndPoint}) mass blocks have been processed.");
+                        Log($"Peer ({client.Client.RemoteEndPoint}) mass blocks have been processed: {provideBlocks.Blocks.Length}");
+                        await stream.SendPacket(new GetChainStatusPacket(128));
                         break;
                     }
 

@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleNode", "ConsoleNode\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Testing", "Testing\Testing.csproj", "{E5F387C2-E266-4523-916A-8C06B4700420}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GodotWallet", "GodotWallet\Democracy Coin Wallet.csproj", "{2DDF0612-2661-4521-8E49-8F1D429FBEFF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +32,7 @@ Global
 		{E5F387C2-E266-4523-916A-8C06B4700420}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E5F387C2-E266-4523-916A-8C06B4700420}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E5F387C2-E266-4523-916A-8C06B4700420}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2DDF0612-2661-4521-8E49-8F1D429FBEFF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 	EndGlobalSection
 EndGlobal

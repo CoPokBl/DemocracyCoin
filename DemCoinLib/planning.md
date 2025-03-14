@@ -29,10 +29,7 @@ Transaction Data:
 - Signature (from priv key of all prev data concat and hashed)
 
 TODO:
-- Use bouncy castle for SHA256 hashing (or other lib)
-- Don't reserialize the block header every time
 - Godot wallet
 - HTTP/TCP local api for other apps to interact with the wallet
 - Test TCP nodes
-- Balance miner rewards
-- DB caching wrapper
+

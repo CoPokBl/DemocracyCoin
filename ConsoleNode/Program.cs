@@ -3,6 +3,7 @@ using System.Numerics;
 using ConsoleNode;
 using DemCoinLib;
 using DemCoinLib.Structs;
+using DemNodeTcpLib;
 
 Console.WriteLine("Hello, World!");
 
@@ -11,36 +12,41 @@ DemCoinNode node = new(args[0]);
 if (!node.ValidateChain()) {
     throw new Exception("Invalid chain");
 }
-// TcpDemNode tcp = node.CreateTcpNode(port: int.Parse(args[0]), peers: args.Length >= 2 ? [
-//     args[1]
-// ] : []);
-// tcp.Log += l => Logger.Info("tcp", l);
-// tcp.Init();
+
+bool secondaryValidation = node.ValidateBlocks(node.BlockDatabase.GetBlockRange(0, 999), out string? _, node.ChainHeight, checkTimestamp:false);
+if (!secondaryValidation) {  // Just double check that this function works by pairing it with ValidateChain
+    throw new Exception("Invalid ValidateBlocks algo (It doesn't work correctly)");
+}
+
+TcpDemNode tcp = node.CreateTcpNode(port: int.Parse(args[0]), peers: args.Length >= 2 ? [
+    args[1]
+] : []);
+tcp.Log += l => Logger.Info("tcp", l);
+tcp.Init();
 
 Logger.Info("node", "Node has started");
 
-DemCoinWallet wallet = DemCoinWallet.NewWithPhrase();
-
-List<double> mineTimes = [];
-while (true) {
-    Stopwatch t = Stopwatch.StartNew();
-    Block b = MineBlock(node, wallet);
-    mineTimes.Add(t.Elapsed.TotalSeconds);
-    Console.WriteLine("AVERAGE BLOCK TIME: " + mineTimes.Average());
-    try {
-        node.MineBlock(b);
-    }
-    catch (Exception) {
-        Console.WriteLine("--------- FAILED TO PROCESS MINED BLOCK ---------");
-    }
-}
-return;
+DemCoinWallet wallet = DemCoinWallet.FromPhrase("crystal clap absent mandate taste tray legend slice volume tube december media absent".Split(" "));
+Console.WriteLine($"Wallet: {wallet.Address}");
+Console.WriteLine($"Balance: {node.GetBalance(wallet.Address)}");
 
 if (args.Length == 3) {
     Logger.Info("node", "Scheduling mine in 5 seconds...");
-    await Task.Delay(1000);
-    Block b = MineBlock(node, wallet);
-    node.MineBlock(b);
+    await Task.Delay(5000);
+    
+    List<double> mineTimes = [];
+    while (true) {
+        Stopwatch t = Stopwatch.StartNew();
+        Block b = MineBlock(node, wallet);
+        mineTimes.Add(t.Elapsed.TotalSeconds);
+        Console.WriteLine("AVERAGE BLOCK TIME: " + mineTimes.Average());
+        try {
+            node.MineBlock(b);
+        }
+        catch (Exception) {
+            Console.WriteLine("--------- FAILED TO PROCESS MINED BLOCK ---------");
+        }
+    }
 }
 Thread.Sleep(-1);
 

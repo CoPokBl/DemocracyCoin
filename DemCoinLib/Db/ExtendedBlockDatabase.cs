@@ -32,7 +32,7 @@ public class ExtendedBlockDatabase(IBlockDatabase baseDb, ulong trimAmount = 0) 
             return baseDb.GetBlockByIndex(index);
         }
 
-        return ExtraBlocks[ExtraBlocks.Count - 1 - (int)(index - GetBaseBlockCount())];
+        return ExtraBlocks[(int)(index - GetBaseBlockCount())];
     }
 
     public Block[] GetBlockRange(ulong start, ulong end) {

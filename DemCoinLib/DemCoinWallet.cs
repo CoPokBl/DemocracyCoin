@@ -24,12 +24,6 @@ public class DemCoinWallet {
         Creds = creds;
     }
 
-    public static DemCoinWallet Import(string xml) {
-        ECDsa ecdsa = ECDsa.Create();
-        ecdsa.FromXmlString(xml);
-        return new DemCoinWallet(ecdsa);
-    }
-
     public static DemCoinWallet FromPrivateKey(byte[] privKey) {
         return new DemCoinWallet(GenEcDsaFromPrivKey(privKey));
     }

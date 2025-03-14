@@ -11,11 +11,12 @@ public class DemCoinNode {
     public const int TargetSecsPerBlock = 60;  // How many seconds we want a block to take to mine
     public const int MaxAllowedTimeDrift = 60;  // How many seconds we allow a block to be off by
     public const int MaxAdjustmentFactor = 4;  // How much we allow the difficulty to change by (diff * factor or diff / factor)
-    public const int BigAdjustmentMultiplier = 1;  // How much we allow the difficulty to change by (diff * factor or diff / factor)
+    public const int BigMaxAdjustmentFactor = 16;  // How much we allow the difficulty to change by (diff * factor or diff / factor)
     public const int BigAdjustmentBlocks = 100;  // How many blocks during which we can make bigger adjustments to the difficulty
     public const double MaxMinerReward = 20;  // The maximum reward a miner can get for mining a block
     public const double MinMinerReward = 0.2;  // The minimum reward a miner can get for mining a block
-    public const double MinerRewardScale = 0.01;  // How late the reward spikes
+    public const double MinerRewardScale = 1;  // How late the reward spikes
+    public const double MinerRewardDiffLimit = 6825079900;  // The difficulty at which the miner reward shall hit its maximum
     public static readonly byte[] CoinbasePublicKey = new byte[64];  // The public key of the coinbase, used to specify a coinbase transaction, should also be used as signature
     
     // RUNTIME SETTINGS
@@ -58,6 +59,9 @@ public class DemCoinNode {
     public bool ValidateChain() {
         ulong chainHeight = ChainHeight;
         for (ulong i = 0; i < chainHeight; i++) {
+            if (i == 0) {
+                Console.Write("");
+            }
             Block block = BlockDatabase.GetBlockByIndex(i)!;
             if (ValidateBlock(block, out string? reason, chainHeight - i, checkTimestamp:false)) {
                 Console.WriteLine($"Block {i} is valid");
@@ -138,7 +142,7 @@ public class DemCoinNode {
     }
 
     private BigInteger _cDiff;
-    private ulong _cDiffHeight = 0;
+    private ulong _cDiffHeight;
     public BigInteger GetCurrentDifficulty(ulong skip = 0, IBlockDatabase? db = null, bool cache = false) {
         if (cache && _cDiffHeight == ChainHeight) {
             return _cDiff;
@@ -158,16 +162,16 @@ public class DemCoinNode {
         ulong timeTaken = lastBlock.TimeStamp - firstBlock.TimeStamp;
 
         bool bigAdjust = db.GetBlockCount() - skip <= BigAdjustmentBlocks;
+        int maxAdjust = bigAdjust ? BigMaxAdjustmentFactor : MaxAdjustmentFactor;
+        
         double adjustment = (double)TargetTimePerInterval / timeTaken;
-        if (adjustment > MaxAdjustmentFactor) {
-            adjustment = MaxAdjustmentFactor;
+        if (adjustment > maxAdjust) {
+            adjustment = maxAdjust;
         }
 
-        if (adjustment < 1.0 / MaxAdjustmentFactor) {
-            adjustment = 1.0 / MaxAdjustmentFactor;
+        if (adjustment < 1.0 / maxAdjust) {
+            adjustment = 1.0 / maxAdjust;
         }
-
-        if (bigAdjust) adjustment *= BigAdjustmentMultiplier;
 
         BigInteger lastDiff = new(lastBlock.Difficulty, true);
 
@@ -175,6 +179,9 @@ public class DemCoinNode {
         if (result < 1) {
             result = 1;
         }
+
+        _cDiff = result;
+        _cDiffHeight = ChainHeight;
         
         return result;
     }
@@ -190,17 +197,16 @@ public class DemCoinNode {
         return DemCoinUtils.ToInt256Bytes(MaxDifficultyInt / GetCurrentDifficulty(skip, db, cache));
     }
 
-    public double GetCurrentMinerReward(ulong skip = 0, IBlockDatabase? db = null) {
-        return GetCurrentMinerReward(GetCurrentDifficulty(skip, db).ToByteArray(true));
+    public double GetCurrentMinerReward(ulong skip = 0, IBlockDatabase? db = null, bool cache = false) {
+        return GetCurrentMinerReward(GetCurrentDifficulty(skip, db, cache).ToByteArray(true));
     }
     
-    // This method is disgusting
     public static double GetCurrentMinerReward(byte[] difficulty) {  // Gets reward for next block based on current difficulty
         double diff = (double) new BigInteger(difficulty, true);
 
         double reward = MinMinerReward +
-                        Math.Pow(diff / MaxDifficulty, MinerRewardScale) * (MaxMinerReward - MinMinerReward);
-        return Math.Round(reward, 2);
+                        Math.Pow(diff / MinerRewardDiffLimit, MinerRewardScale) * (MaxMinerReward - MinMinerReward);
+        return Math.Min(Math.Max(Math.Round(reward, 2), 0.2), 20);
     }
     
     public void AddChainStartBlock() {
@@ -319,7 +325,7 @@ public class DemCoinNode {
     /// It is assumed that the block is valid.
     /// </summary>
     /// <param name="block">A valid block.</param>
-    private void AddBlockToDatabase(Block block) {
+    public void AddBlockToDatabase(Block block) {
         BlockDatabase.InsertBlock(block);
         
         // Transactions
@@ -341,7 +347,8 @@ public class DemCoinNode {
         bool checkTransactions = true) {
         ExtendedBlockDatabase db = new(BlockDatabase, skip);
 
-        foreach (Block block in blocks) {
+        for (int i = 0; i < blocks.Length; i++) {
+            Block block = blocks[i];
             bool success = ValidateBlock(block, out failReason, 0, checkTimestamp, checkTransactions, db, false);
             if (!success) return false;
             db.InsertBlock(block);
@@ -375,9 +382,9 @@ public class DemCoinNode {
     public bool ValidateBlock(Block block, out string? failReason, ulong skip = 0, bool checkTimestamp = true, bool checkTransactions = true, IBlockDatabase? db = null, bool calcTransactionSigs = true) {
         failReason = null;
         db ??= BlockDatabase;
-        Block lastBlock = db.GetLastBlock(skip)!;
+        Block? lastBlock = db.GetLastBlock(skip);
         
-        if (skip == ChainHeight) {  // We are validating the genesis block, it must match our version
+        if (lastBlock == null) {  // We are validating the genesis block, it must match our version
             failReason = "Invalid genesis block";  // Just ignore if the sequence is equal
             return block.HashHeader(calcTransactionSigs).SequenceEqual(GetDefBlock().HashHeader(calcTransactionSigs));
         }
@@ -387,14 +394,14 @@ public class DemCoinNode {
             failReason = "Invalid PrevHeaderHash";
             return false;
         }
-
-        if (!IsBlockNonceValid(block, calcTransactionSigs, skip, db:db)) {
-            failReason = "Invalid nonce";
+        
+        if (!block.Difficulty.SequenceEqual(DemCoinUtils.ToInt256Bytes(GetCurrentDifficulty(skip, db)))) {
+            failReason = "Incorrect difficulty";
             return false;
         }
 
-        if (!block.Difficulty.SequenceEqual(DemCoinUtils.ToInt256Bytes(GetCurrentDifficulty(skip, db)))) {
-            failReason = "Incorrect difficulty";
+        if (!IsBlockNonceValid(block, calcTransactionSigs, skip, db:db)) {
+            failReason = "Invalid nonce";
             return false;
         }
 
