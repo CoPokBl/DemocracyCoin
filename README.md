@@ -1,9 +1,23 @@
 # Democracy Coin
-My little crypto currency experiment. An entire blockchain system written from scratch in C#.
+My little cryptocurrency experiment. 
+An entire blockchain system written from scratch in C#.
 
-## Coin Node
-A node for the blockchain. The node can mine, sync with other nodes, send money and maintain the blockchain.  
-Start as public node: `./CoinNode`  
-Start without hosting: `./CoinNode nohost noseed`  
-Start miner: `./CoinNode mine`  
-Start wallet: `./CoinNode wallet`  
+## ConsoleNode
+A testing node that can be run from the console. 
+It will connect to other nodes and mine blocks.
+
+## DemCoinLib
+The core library for the entire system. Contains all common
+code and schemas for the blockchain. All other projects
+depend on this.
+
+## DemNodeTcpLib
+This library extends the core libraries node class to enable
+TCP communication between nodes.
+
+## GodotWallet
+A simple wallet application written in Godot.
+
+## Testing
+A project that contains unit tests to protect against regressions
+in all other projects.
